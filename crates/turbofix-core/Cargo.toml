@@ -1,0 +1,25 @@
+[package]
+name = "turbofix-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "TurboFix diagnostic engine, performance monitor and history store (no GUI dependencies)"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+tokio-util = "0.7"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+sysinfo = "0.33"
+default-net = "0.22"
+url = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
