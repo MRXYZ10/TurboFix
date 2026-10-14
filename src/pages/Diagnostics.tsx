@@ -37,7 +37,7 @@ export default function Diagnostics({ report }: { report: ScanReport | null }) {
       <div className="diagnostics-summary">
         <h1 className="text-2xl font-semibold text-slate-100">Internet Diagnostics</h1>
         <p className="text-sm text-slate-400">
-          Scan from {fmtTime(report.started_at)} Â· {report.status} Â· v{report.app_version} Â· {report.platform.os}/{report.platform.arch}
+          Scan from {fmtTime(report.started_at)} · {report.status} · v{report.app_version} · {report.platform.os}/{report.platform.arch}
         </p>
       </div>
 

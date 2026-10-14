@@ -148,7 +148,7 @@ export default function MobileBoost({ api }: { api: Api }) {
           <div className={metricClass}>
             <div className="text-xs text-slate-400">Receive link rate</div>
             <div className="mt-2 text-2xl font-semibold text-slate-100">{wifi?.rxLinkSpeedMbps ? `${wifi.rxLinkSpeedMbps} Mbps` : "Not available"}</div>
-            <div className="mt-1 text-xs text-slate-500">Phone â†” router, not internet speed</div>
+            <div className="mt-1 text-xs text-slate-500">Phone ↔ router, not internet speed</div>
           </div>
           <div className={metricClass}>
             <div className="text-xs text-slate-400">Wi-Fi band</div>
@@ -159,13 +159,13 @@ export default function MobileBoost({ api }: { api: Api }) {
         {wifi?.note && <p className="mt-4 text-xs leading-5 text-slate-400">{wifi.note}</p>}
         <div className="mt-5 flex flex-col gap-2 sm:flex-row">
           <button onClick={() => void runBoostCheck()} disabled={runningCheck || loadingWifi} className="rounded-lg bg-accent px-4 py-3 text-sm font-semibold text-slate-950 disabled:opacity-50">
-            {runningCheck ? "Measuring connectionâ€¦" : "Run Mobile Boost Check"}
+            {runningCheck ? "Measuring connection…" : "Run Mobile Boost Check"}
           </button>
           <button onClick={() => void refreshWifi()} disabled={loadingWifi || runningCheck} className="rounded-lg border border-ink-600 px-4 py-3 text-sm font-semibold text-slate-200 disabled:opacity-50">
-            {loadingWifi ? "Refreshingâ€¦" : "Refresh Wi-Fi signal"}
+            {loadingWifi ? "Refreshing…" : "Refresh Wi-Fi signal"}
           </button>
           <button onClick={() => void openSettings()} disabled={openingSettings} className="rounded-lg border border-ink-600 px-4 py-3 text-sm font-semibold text-slate-200 disabled:opacity-50">
-            {openingSettings ? "Opening settingsâ€¦" : "Open Wi-Fi Settings"}
+            {openingSettings ? "Opening settings…" : "Open Wi-Fi Settings"}
           </button>
         </div>
       </section>
@@ -180,12 +180,12 @@ export default function MobileBoost({ api }: { api: Api }) {
           <div className={metricClass}>
             <div className="text-xs text-slate-400">Download</div>
             <div className="mt-2 text-xl font-semibold text-slate-100">{formatMbps(download)}</div>
-            {previousDownload !== null && download !== null && <div className="mt-1 text-xs text-slate-500">Previous check: {formatMbps(previousDownload)} Â· Î” {(download - previousDownload).toFixed(1)} Mbps</div>}
+            {previousDownload !== null && download !== null && <div className="mt-1 text-xs text-slate-500">Previous check: {formatMbps(previousDownload)} · Δ {(download - previousDownload).toFixed(1)} Mbps</div>}
           </div>
           <div className={metricClass}>
             <div className="text-xs text-slate-400">Upload</div>
             <div className="mt-2 text-xl font-semibold text-slate-100">{formatMbps(upload)}</div>
-            {previousUpload !== null && upload !== null && <div className="mt-1 text-xs text-slate-500">Previous check: {formatMbps(previousUpload)} Â· Î” {(upload - previousUpload).toFixed(1)} Mbps</div>}
+            {previousUpload !== null && upload !== null && <div className="mt-1 text-xs text-slate-500">Previous check: {formatMbps(previousUpload)} · Δ {(upload - previousUpload).toFixed(1)} Mbps</div>}
           </div>
           <div className={metricClass}>
             <div className="text-xs text-slate-400">Latency</div>
