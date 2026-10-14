@@ -1,3 +1,4 @@
+import { invoke as invokeMobileCommand } from "@tauri-apps/api/core";
 // The only module that talks to Rust. Every function maps to one typed Tauri command.
 // There is intentionally no mock fallback: outside the desktop shell calls fail with
 // a clear error rather than returning invented data.
@@ -48,3 +49,21 @@ export const api = {
 };
 
 export type Api = typeof api;
+
+// Android-only native measurements. The backend returns an explicit unsupported
+// result on desktop rather than inventing Wi-Fi data.
+export interface MobileWifiInfo {
+  supported: boolean;
+  wifiEnabled: boolean;
+  connected: boolean;
+  rssiDbm: number | null;
+  rxLinkSpeedMbps: number | null;
+  txLinkSpeedMbps: number | null;
+  frequencyMhz: number | null;
+  note: string;
+}
+
+export const mobileBoostApi = {
+  wifiInfo: () => invokeMobileCommand<MobileWifiInfo>("get_mobile_wifi_info"),
+  openWifiSettings: () => invokeMobileCommand<boolean>("open_wifi_settings"),
+};

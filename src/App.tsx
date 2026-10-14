@@ -16,6 +16,7 @@ import Settings from "./pages/Settings";
 
 import type {
   ApiError,
+  Capability,
   ScanReport,
   SpeedTestResult,
 } from "./types";
@@ -44,75 +45,120 @@ const NAV: NavItem[] = [
   {
     id: "overview",
     label: "Overview",
-    icon: "â—«",
+    icon: "OV",
     section: "Workspace",
     hint: "Your network at a glance",
   },
   {
     id: "diagnostics",
     label: "Diagnostics",
-    icon: "âŒ",
+    icon: "DX",
     section: "Workspace",
     hint: "Find the root cause",
   },
   {
     id: "speedtest",
     label: "Speed test",
-    icon: "â†¯",
+    icon: "ST",
     section: "Workspace",
     hint: "Measure real throughput",
   },
   {
     id: "wifi",
     label: "Wi-Fi analysis",
-    icon: "â—‰",
+    icon: "WF",
     section: "Tools",
     hint: "Inspect your wireless link",
   },
   {
     id: "performance",
     label: "PC performance",
-    icon: "â–¥",
+    icon: "PC",
     section: "Tools",
     hint: "Live system health",
   },
   {
     id: "optimizer",
     label: "Smart optimizer",
-    icon: "âœ³",
+    icon: "FX",
     section: "Tools",
     hint: "Safe, evidence-based fixes",
   },
   {
     id: "cleanup",
     label: "Storage cleanup",
-    icon: "âŒ«",
+    icon: "CL",
     section: "Tools",
     hint: "Review temporary files",
   },
   {
     id: "history",
     label: "Reports & history",
-    icon: "â–¤",
+    icon: "HI",
     section: "Manage",
     hint: "Your local measurements",
   },
   {
     id: "settings",
     label: "Settings",
-    icon: "âš™",
+    icon: "SE",
     section: "Manage",
     hint: "Configure TurboFix",
   },
 ];
 
+const isAndroidWebView = () => typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
 const pageTitle = (page: PageId) =>
-  NAV.find((item) => item.id === page)?.label ?? "Overview";
+  page === "wifi" && isAndroidWebView() ? "Mobile Boost" : NAV.find((item) => item.id === page)?.label ?? "Overview";
 
+function NavGlyph({ name }: { name: PageId }) {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" focusable="false">
+      {name === "overview" && <>
+        <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
+        <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
+        <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
+        <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" />
+      </>}
+      {name === "diagnostics" && <path d="M3 12h4l2.2-5.5L13 18l2.2-5H21" />}
+      {name === "wifi" && <>
+        <path d="M3 9.5a14 14 0 0 1 18 0" />
+        <path d="M6.5 13a8.5 8.5 0 0 1 11 0" />
+        <path d="M9.8 16.3a3.5 3.5 0 0 1 4.4 0" />
+        <circle cx="12" cy="19.5" r=".8" fill="currentColor" stroke="none" />
+      </>}
+      {name === "speedtest" && <>
+        <path d="M5 19a9 9 0 1 1 14 0" />
+        <path d="m12 12 4-4" />
+        <circle cx="12" cy="12" r="1.4" />
+      </>}
+      {name === "performance" && <path d="M3 12h4l2-6 4 12 2-6h6" />}
+      {name === "optimizer" && <>
+        <path d="m12 3 1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5L12 3Z" />
+        <path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z" />
+      </>}
+      {name === "cleanup" && <>
+        <path d="M4 7h16" />
+        <path d="m6 7 1 13h10l1-13" />
+        <path d="M9 7V4h6v3M10 10v7M14 10v7" />
+      </>}
+      {name === "history" && <>
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M12 7v5l3.5 2" />
+      </>}
+      {name === "settings" && <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="m19.4 15 .1.1 1.1.9-1.5 2.6-1.4-.6a8 8 0 0 1-1.5.9l-.2 1.5h-3l-.3-1.5a8 8 0 0 1-1.5-.9l-1.4.6-1.5-2.6 1.2-.9a7 7 0 0 1 0-1.8l-1.2-.9 1.5-2.6 1.4.6a8 8 0 0 1 1.5-.9l.3-1.5h3l.2 1.5a8 8 0 0 1 1.5.9l1.4-.6 1.5 2.6-1.1.9a7 7 0 0 1 0 1.7Z" transform="translate(-1 -1) scale(1.05)" />
+      </>}
+    </svg>
+  );
+}
 export default function App({ api = realApi }: { api?: Api }) {
   const [page, setPage] = useState<PageId>("overview");
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
+  const [capabilities, setCapabilities] = useState<Capability[] | null>(null);
+  const isAndroid = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
 
   const [report, setReport] = useState<ScanReport | null>(null);
   const [version, setVersion] = useState(0);
@@ -160,6 +206,19 @@ export default function App({ api = realApi }: { api?: Api }) {
     void loadLatest();
     void loadSpeedHistory();
   }, [api, loadLatest, loadSpeedHistory]);
+
+  useEffect(() => {
+    let active = true;
+    void api.capabilities().then((items) => {
+      if (active) setCapabilities(items);
+    }).catch(() => {
+      // Keep conservative Android navigation if capability lookup fails.
+      if (active) setCapabilities(null);
+    });
+    return () => {
+      active = false;
+    };
+  }, [api]);
 
   useEffect(() => {
     if (!mobileNav) return;
@@ -221,6 +280,27 @@ export default function App({ api = realApi }: { api?: Api }) {
   };
 
   const groups = ["Workspace", "Tools", "Manage"] as const;
+  const capabilityIdByPage: Partial<Record<PageId, string>> = {
+    diagnostics: "connectivity",
+    wifi: "wifi",
+    speedtest: "speed_test",
+    performance: "pc_monitor",
+    optimizer: "optimizer",
+    cleanup: "cleanup",
+    history: "history",
+  };
+  const blockedAndroidFallback = new Set<PageId>(["wifi", "optimizer", "cleanup"]);
+  const visibleNavItems = !isAndroid ? NAV : NAV.filter((item) => {
+    if (!capabilities) return !blockedAndroidFallback.has(item.id);
+    const capabilityId = capabilityIdByPage[item.id];
+    if (!capabilityId) return true;
+    return capabilities.some((capability) =>
+      capability.id === capabilityId && capability.status === "available",
+    );
+  });
+  const displayPageTitle = isAndroid && page === "performance"
+    ? "Device health"
+    : pageTitle(page);
 
   return (
     <div className="app-shell">
@@ -257,7 +337,7 @@ export default function App({ api = realApi }: { api?: Api }) {
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             onClick={() => setCollapsed((value) => !value)}
           >
-            {collapsed ? "Â»" : "Â«"}
+            {collapsed ? ">>" : "<<"}
           </button>
         </div>
 
@@ -266,7 +346,7 @@ export default function App({ api = realApi }: { api?: Api }) {
           {!collapsed && (
             <>
               <span className="workspace-label">Personal workspace</span>
-              <span className="workspace-chevron">âŒ„</span>
+              <span className="workspace-chevron">v</span>
             </>
           )}
         </div>
@@ -278,7 +358,7 @@ export default function App({ api = realApi }: { api?: Api }) {
                 <div className="nav-section-label">{group}</div>
               )}
 
-              {NAV.filter((item) => item.section === group).map((item) => (
+              {visibleNavItems.filter((item) => item.section === group).map((item) => (
                 <button
                   key={item.id}
                   onClick={() => navigate(item.id)}
@@ -288,13 +368,11 @@ export default function App({ api = realApi }: { api?: Api }) {
                     page === item.id ? "nav-item-active" : ""
                   }`}
                 >
-                  <span className="nav-icon" aria-hidden="true">
-                    {item.icon}
-                  </span>
+                  <span className="nav-icon" aria-hidden="true"><NavGlyph name={item.id} /></span>
 
                   {!collapsed && (
                     <>
-                      <span className="nav-label">{item.label}</span>
+                      <span className="nav-label">{isAndroid && item.id === "performance" ? "Device health" : item.label}</span>
                       {item.id === "optimizer" && (
                         <span className="nav-dot" />
                       )}
@@ -308,7 +386,7 @@ export default function App({ api = realApi }: { api?: Api }) {
 
         <div className="sidebar-bottom">
           <div className="privacy-card">
-            <span className="privacy-icon">âŒ‘</span>
+            <span className="privacy-icon">OK</span>
             {!collapsed && (
               <div>
                 <strong>Private by design</strong>
@@ -333,21 +411,19 @@ export default function App({ api = realApi }: { api?: Api }) {
               className="mobile-menu"
               aria-label="Open navigation"
               onClick={() => setMobileNav(true)}
-            >
-              â˜°
-            </button>
+            ><span className="menu-glyph" aria-hidden="true" /></button>
 
             <div className="breadcrumb">
               <span>TurboFix</span>
               <span className="breadcrumb-slash">/</span>
-              <strong>{pageTitle(page)}</strong>
+              <strong>{displayPageTitle}</strong>
             </div>
           </div>
 
           <div className="topbar-actions">
             <div className="environment-chip">
               <span className="online-dot" />
-              Desktop app
+              {isAndroid ? "Android app" : "Desktop app"}
             </div>
             <div className="topbar-divider" />
             <div className="user-chip">
@@ -363,7 +439,7 @@ export default function App({ api = realApi }: { api?: Api }) {
               <div className="eyebrow">
                 NETWORK HEALTH CENTER <span className="eyebrow-line" />
               </div>
-              <h1 className="page-title">{pageTitle(page)}</h1>
+              <h1 className="page-title">{displayPageTitle}</h1>
               <p>{NAV.find((item) => item.id === page)?.hint}</p>
             </div>
 
@@ -446,13 +522,41 @@ export default function App({ api = realApi }: { api?: Api }) {
 
           <footer className="app-footer">
             <span>
-              TurboFix <b>Â·</b> Diagnose. Fix. Verify.
+              TurboFix <b>·</b> Diagnose. Fix. Verify.
             </span>
             <span>
               Measurements are estimates, not a promise of faster internet.
             </span>
           </footer>
         </main>
+      <nav className="mobile-bottom-nav" aria-label="Mobile navigation">
+        {([
+          { id: "overview", label: "Home" },
+          { id: "diagnostics", label: "Scan" },
+          { id: "speedtest", label: "Speed" },
+          { id: "wifi", label: isAndroidWebView() ? "Boost" : "Wi-Fi" },
+          { id: "performance", label: "Health" },
+        ] as { id: PageId; label: string }[]).filter((tab) => !isAndroid || tab.id === "wifi" || visibleNavItems.some((item) => item.id === tab.id)).map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            className="mobile-tab"
+            aria-current={page === tab.id ? "page" : undefined}
+            onClick={() => navigate(tab.id)}
+          >
+            <span className="mobile-tab-icon" aria-hidden="true"><NavGlyph name={tab.id} /></span>
+            <span>{tab.label}</span>
+          </button>
+        ))}
+        <button type="button" className="mobile-tab" onClick={() => setMobileNav(true)} aria-label="More tools and settings">
+          <span className="mobile-tab-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" focusable="false">
+              <circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" />
+            </svg>
+          </span>
+          <span>More</span>
+        </button>
+      </nav>
       </div>
     </div>
   );

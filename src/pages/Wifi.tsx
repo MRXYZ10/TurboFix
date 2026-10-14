@@ -4,8 +4,9 @@ import type { Api } from "../api";
 import { Bar, Card, ErrorBanner, Metric } from "../components/ui";
 import { fmtTime } from "../lib/format";
 import type { ApiError, WifiSnapshot } from "../types";
+import MobileBoost from "./MobileBoost";
 
-export default function Wifi({ api }: { api: Api }) {
+function DesktopWifi({ api }: { api: Api }) {
   const [snapshot, setSnapshot] = useState<WifiSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
@@ -332,4 +333,10 @@ export default function Wifi({ api }: { api: Api }) {
       )}
     </div>
   );
+}
+
+export default function Wifi({ api }: { api: Api }) {
+  const isAndroid = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+  if (isAndroid) return <MobileBoost api={api} />;
+  return <DesktopWifi api={api} />;
 }

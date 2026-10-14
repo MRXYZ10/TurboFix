@@ -57,7 +57,7 @@ pub fn capabilities() -> Vec<Capability> {
         cap("dns_flush", "Flush DNS cache", if cfg!(windows) { Available } else { Planned }, "Runs the fixed Windows ipconfig /flushdns command after explicit user action; no adapter settings are changed."),
         cap("startup", "Startup entry review", Planned, "Read-only enumeration not implemented yet."),
         cap("dns_change", "DNS server change and rollback", Disabled, "Disabled until adapter-specific apply, verification and rollback are implemented and tested on Windows."),
-        cap("cleanup", "Preview-first temporary-file cleanup", Available, "Lists up to 100 large regular files in the user's temp folder that are at least 7 days old. Only explicitly selected preview IDs can be deleted; no recursion or symlink following."),
+        cap("cleanup", "Preview-first temporary-file cleanup", if cfg!(windows) { Available } else { Planned }, "Lists up to 100 large regular files in the user's temp folder that are at least 7 days old. Only explicitly selected preview IDs can be deleted; no recursion or symlink following."),
         cap("optimizer", "Safe quick fixes", windows_fix_status, "Only the explicitly requested DNS-cache flush is implemented. Risky TCP, registry, service and adapter tweaks are not applied."),
     ]
 }
@@ -90,7 +90,11 @@ mod tests {
                 .find(|c| c.id == "cleanup")
                 .unwrap()
                 .status,
-            CapabilityStatus::Available
+            if cfg!(windows) {
+                CapabilityStatus::Available
+            } else {
+                CapabilityStatus::Planned
+            }
         );
         assert_eq!(
             capabilities()
