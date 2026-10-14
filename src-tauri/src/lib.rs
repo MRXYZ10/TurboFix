@@ -285,6 +285,41 @@ fn export_scan_json(state: State<'_, AppState>, id: i64) -> CmdResult<String> {
     serde_json::to_string_pretty(&report).map_err(|e| ApiError::from(CoreError::from(e)))
 }
 
+#[tauri::command]
+async fn get_mobile_wifi_info(
+    app: tauri::AppHandle,
+) -> std::result::Result<tauri_plugin_mobile_boost::WifiInfoResponse, String> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri_plugin_mobile_boost::MobileBoostExt;
+        app.mobile_boost()
+            .wifi_info()
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(tauri_plugin_mobile_boost::WifiInfoResponse::unsupported())
+    }
+}
+
+#[tauri::command]
+async fn open_wifi_settings(app: tauri::AppHandle) -> std::result::Result<bool, String> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri_plugin_mobile_boost::MobileBoostExt;
+        app.mobile_boost()
+            .open_wifi_settings()
+            .map(|response| response.ok)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Err("Opening Android Wi-Fi settings is only supported in the Android app.".into())
+    }
+}
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -314,6 +349,7 @@ pub fn run() {
             });
             Ok(())
         })
+        .plugin(tauri_plugin_mobile_boost::init())
         .invoke_handler(tauri::generate_handler![
             get_capabilities,
             get_platform,
@@ -333,7 +369,9 @@ pub fn run() {
             preview_temp_cleanup,
             delete_temp_files,
             flush_dns_cache,
-            export_scan_json
+            export_scan_json,
+            get_mobile_wifi_info,
+            open_wifi_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running TurboFix");
