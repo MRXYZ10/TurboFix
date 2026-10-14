@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Api } from "../api";
 import { Card, ErrorBanner } from "../components/ui";
 import { fmtTime } from "../lib/format";
@@ -21,7 +21,15 @@ export default function SpeedTest({ api, latest, history, onFinish }: Props) {
   // Keep the completed result in this page too, so it is shown immediately even
   // while the parent updates overview/history state asynchronously.
   const [completedResult, setCompletedResult] = useState<SpeedTestResult | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const displayedResult = completedResult ?? latest;
+
+  useEffect(() => {
+    if (!running) { setElapsedSeconds(0); return; }
+    const started = Date.now();
+    const timer = window.setInterval(() => setElapsedSeconds((Date.now() - started) / 1000), 100);
+    return () => window.clearInterval(timer);
+  }, [running]);
 
   const run = async () => {
     setRunning(true);
@@ -52,7 +60,7 @@ export default function SpeedTest({ api, latest, history, onFinish }: Props) {
         </button>
       </div>
 
-      {running && <div role="status" className="rounded-lg border border-accent/30 bg-accent/10 p-3 text-sm text-cyan-100">Testing download and upload. Keep other large downloads paused for a more representative result.</div>}
+      {running && <div role="status" className="rounded-lg border border-accent/30 bg-accent/10 p-3 text-sm text-cyan-100">Testing download and upload · {elapsedSeconds.toFixed(1)} s elapsed. The backend reports results after each bounded transfer; keep other large downloads paused for a representative result.</div>}
       {error && <ErrorBanner message={error.message} onRetry={run} />}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -65,7 +73,7 @@ export default function SpeedTest({ api, latest, history, onFinish }: Props) {
           <p className="mt-1 text-xs text-slate-500">Synthetic test data sent</p>
         </Card>
         <Card title="Last test">
-          <div className="text-xl font-semibold text-slate-100">{displayedResult ? `${(displayedResult.duration_ms / 1000).toFixed(1)} s` : "Not run"}</div>
+          <div className="text-xl font-semibold text-slate-100">{running ? `${elapsedSeconds.toFixed(1)} s` : displayedResult ? `${(displayedResult.duration_ms / 1000).toFixed(1)} s` : "Not run"}</div>
           <p className="mt-1 text-xs text-slate-500">{displayedResult ? fmtTime(displayedResult.started_at) : "Your results appear here"}</p>
         </Card>
       </div>

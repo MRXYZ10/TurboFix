@@ -2,11 +2,11 @@
 import { useState } from "react";
 import type { Api } from "../api";
 import { Card, ErrorBanner } from "../components/ui";
-import type { ApiError, QuickFixResult } from "../types";
+import type { ApiError, QuickFixResult, ScanReport } from "../types";
 
 type OptimizerProps = {
   api: Api;
-  onVerify: () => void | Promise<void>;
+  onVerify: (report: ScanReport) => void;
 };
 
 export default function Optimizer({ api, onVerify }: OptimizerProps) {
@@ -16,6 +16,8 @@ export default function Optimizer({ api, onVerify }: OptimizerProps) {
   const [result, setResult] = useState<QuickFixResult | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [before, setBefore] = useState<ScanReport | null>(null);
+  const [after, setAfter] = useState<ScanReport | null>(null);
 
   const apply = async () => {
     if (running) return;
@@ -24,8 +26,12 @@ export default function Optimizer({ api, onVerify }: OptimizerProps) {
     setError(null);
     setVerifyError(null);
     setResult(null);
+    setBefore(null);
+    setAfter(null);
 
     try {
+      const baseline = await api.startScan();
+      setBefore(baseline);
       const response = await api.flushDnsCache();
       setResult(response);
       setConfirm(false);
@@ -37,6 +43,17 @@ export default function Optimizer({ api, onVerify }: OptimizerProps) {
             response.message ||
             "Windows could not confirm that the DNS cache was flushed.",
         });
+      } else {
+        setVerifying(true);
+        try {
+          const verification = await api.startScan();
+          setAfter(verification);
+          onVerify(verification);
+        } catch (e) {
+          setVerifyError(e instanceof Error ? e.message : String(e));
+        } finally {
+          setVerifying(false);
+        }
       }
     } catch (e) {
       const message =
@@ -50,26 +67,6 @@ export default function Optimizer({ api, onVerify }: OptimizerProps) {
       });
     } finally {
       setRunning(false);
-    }
-  };
-
-  const verify = async () => {
-    if (verifying) return;
-
-    setVerifying(true);
-    setVerifyError(null);
-
-    try {
-      await onVerify();
-    } catch (e) {
-      const message =
-        e && typeof e === "object" && "message" in e
-          ? String((e as { message: unknown }).message)
-          : String(e);
-
-      setVerifyError(message || "Could not start diagnostics.");
-    } finally {
-      setVerifying(false);
     }
   };
 
@@ -102,21 +99,7 @@ export default function Optimizer({ api, onVerify }: OptimizerProps) {
             {result.message}
           </p>
 
-          <p className="mt-2 text-xs text-slate-400">
-            The DNS flush command completed successfully. Run diagnostics
-            separately to inspect your current network condition.
-          </p>
-
-          <button
-            type="button"
-            onClick={() => void verify()}
-            disabled={verifying || running}
-            className="mt-3 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-ink-950 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {verifying
-              ? "Starting diagnostics…"
-              : "Run diagnostics to verify"}
-          </button>
+          <p className="mt-2 text-xs text-slate-400">{verifying ? "Rerunning diagnostics to verify current network measurements…" : after ? "Diagnostics reran after the change. Compare measured values below; command completion does not itself prove improvement." : "DNS cache flush completed, but verification diagnostics could not be completed."}</p>
         </div>
       )}
 
@@ -195,6 +178,12 @@ export default function Optimizer({ api, onVerify }: OptimizerProps) {
           </div>
         )}
       </Card>
+
+      {before && <Card title="Diagnostic baseline before DNS flush">
+        <p className="text-sm text-slate-300">DNS: {before.dns.filter((x) => x.time_ms !== null).map((x) => `${x.host} ${x.time_ms!.toFixed(1)} ms`).join(" · ") || "No successful DNS measurements"}</p>
+        <p className="mt-1 text-sm text-slate-300">TCP latency: {before.latency.filter((x) => x.stats.median_ms !== null).map((x) => `${x.target} ${x.stats.median_ms!.toFixed(1)} ms median`).join(" · ") || "No successful TCP measurements"}</p>
+        {after && <><p className="mt-3 text-sm font-medium text-cyan-200">After diagnostics</p><p className="mt-1 text-sm text-slate-300">DNS: {after.dns.filter((x) => x.time_ms !== null).map((x) => `${x.host} ${x.time_ms!.toFixed(1)} ms`).join(" · ") || "No successful DNS measurements"}</p><p className="mt-1 text-sm text-slate-300">TCP latency: {after.latency.filter((x) => x.stats.median_ms !== null).map((x) => `${x.target} ${x.stats.median_ms!.toFixed(1)} ms median`).join(" · ") || "No successful TCP measurements"}</p><p className="mt-2 text-xs text-slate-500">These are separate network samples. A DNS cache flush may change lookup timing; TCP connection timing is shown as context. Differences do not establish causation.</p></>}
+      </Card>}
 
       <Card title="Why other tweaks are not automatic">
         <p className="text-sm text-slate-300">

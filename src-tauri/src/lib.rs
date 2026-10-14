@@ -196,6 +196,24 @@ async fn run_speed_test(state: State<'_, AppState>) -> CmdResult<SpeedTestResult
     Ok(state.storage.save_speed_test(&result)?)
 }
 
+/// One bounded TCP connect measurement. This is not ICMP ping; the destination
+/// must include a port and is supplied by the user.
+#[tauri::command]
+async fn measure_tcp_ping(target: String) -> CmdResult<Option<f64>> {
+    if target.len() > 255 || !target.contains(':') {
+        return Err(ApiError::from(CoreError::InvalidConfig(
+            "Enter a TCP target as hostname:port or IP:port".into(),
+        )));
+    }
+    let token = CancellationToken::new();
+    match turbofix_core::network::tcp_connect(&target, Duration::from_secs(3), &token).await? {
+        turbofix_core::network::TcpOutcome::Connected(ms)
+        | turbofix_core::network::TcpOutcome::Refused(ms) => Ok(Some(ms)),
+        turbofix_core::network::TcpOutcome::Timeout
+        | turbofix_core::network::TcpOutcome::Error(_) => Ok(None),
+    }
+}
+
 #[tauri::command]
 fn list_speed_tests(state: State<'_, AppState>, limit: u32) -> CmdResult<Vec<SpeedTestResult>> {
     Ok(state.storage.list_speed_tests(limit)?)
@@ -365,6 +383,7 @@ pub fn run() {
             clear_history,
             wifi_snapshot,
             run_speed_test,
+            measure_tcp_ping,
             list_speed_tests,
             preview_temp_cleanup,
             delete_temp_files,

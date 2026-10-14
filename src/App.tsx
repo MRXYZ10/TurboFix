@@ -10,6 +10,7 @@ import Overview from "./pages/Overview";
 import Performance from "./pages/Performance";
 import Cleanup from "./pages/Cleanup";
 import SpeedTest from "./pages/SpeedTest";
+import PingMonitor from "./pages/PingMonitor";
 import Wifi from "./pages/Wifi";
 import Optimizer from "./pages/Optimizer";
 import Settings from "./pages/Settings";
@@ -27,6 +28,7 @@ type PageId =
   | "diagnostics"
   | "wifi"
   | "speedtest"
+  | "ping"
   | "performance"
   | "optimizer"
   | "cleanup"
@@ -62,6 +64,13 @@ const NAV: NavItem[] = [
     icon: "ST",
     section: "Workspace",
     hint: "Measure real throughput",
+  },
+  {
+    id: "ping",
+    label: "Ping monitor",
+    icon: "DX",
+    section: "Workspace",
+    hint: "Monitor TCP response time",
   },
   {
     id: "wifi",
@@ -270,13 +279,9 @@ export default function App({ api = realApi }: { api?: Api }) {
     }
   };
 
-  // Run verification and navigate only when the scan succeeds.
-  const verifyDiagnostics = async () => {
-    const success = await scan.start();
-
-    if (success) {
-      navigate("diagnostics");
-    }
+  // Accept the optimizer's completed verification scan into the shared report.
+  const verifyDiagnostics = (verified: ScanReport) => {
+    onFinished(verified);
   };
 
   const groups = ["Workspace", "Tools", "Manage"] as const;
@@ -496,6 +501,7 @@ export default function App({ api = realApi }: { api?: Api }) {
                 onFinish={onSpeedTestFinished}
               />
             )}
+            {page === "ping" && <PingMonitor api={api} />}
 
             {page === "wifi" && <Wifi api={api} />}
 

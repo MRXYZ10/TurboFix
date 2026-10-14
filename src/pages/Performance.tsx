@@ -34,6 +34,11 @@ export default function Performance({ perf }: Props) {
             <p className="text-sm">Receive {fmtRate(s.net_rx_bytes_per_s)} · Send {fmtRate(s.net_tx_bytes_per_s)}</p>
           </Card>
 
+          <Card title="Gaming frame rate">
+            <div className="text-xl font-semibold text-slate-200">Unavailable for universal desktop monitoring</div>
+            <p className="mt-2 text-sm text-slate-400">Windows does not expose a reliable system wide per game FPS stream. TurboFix does not inject into games or use a capture driver. FPS, frame time, average FPS, and 1% lows can be shown only when a game or trusted overlay provides telemetry; no readings are currently available.</p>
+          </Card>
+
           <Card title="Disk capacity">
             <p className="mb-2 text-xs text-slate-500">Disk activity (throughput, queue length) is not measured in this version.</p>
             <ul className="space-y-3">

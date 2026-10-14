@@ -32,6 +32,7 @@ export const api = {
   saveConfig: (config: ScanConfig) => call<void>("save_config", { config }),
   wifiSnapshot: () => call<WifiSnapshot>("wifi_snapshot"),
   runSpeedTest: () => call<SpeedTestResult>("run_speed_test"),
+  measureTcpPing: (target: string) => call<number | null>("measure_tcp_ping", { target }),
   listSpeedTests: (limit: number) => call<SpeedTestResult[]>("list_speed_tests", { limit }),
   flushDnsCache: () => call<QuickFixResult>("flush_dns_cache"),
   previewTempCleanup: () => call<CleanupPreview>("preview_temp_cleanup"),
