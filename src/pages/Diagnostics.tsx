@@ -64,6 +64,42 @@ export default function Diagnostics({ report }: { report: ScanReport | null }) {
         </Card>
       )}
 
+      {report.diagnosis?.findings.length ? (
+        <Card title="Recommended fixes">
+          <ul className="space-y-4">
+            {report.diagnosis.findings.map((finding) => {
+              const advice: Record<string, { reason: string; steps: string[] }> = {
+                no_interface: { reason: "Windows did not report an active network interface.", steps: ["Check that Wi-Fi or Ethernet is enabled.", "Reconnect to your network and scan again."] },
+                external_unreachable: { reason: "External targets could not be reached; the cause may be local networking, the router, or the ISP.", steps: ["Check router connectivity and its internet/WAN status.", "Retry the scan; compare another device on the same network."] },
+                gateway_silent: { reason: "The gateway did not answer the tested ports; some routers ignore these probes.", steps: ["Check whether websites work before assuming the router is faulty.", "If connectivity is actually broken, reconnect to Wi-Fi or inspect the router."] },
+                no_default_route: { reason: "No default route was detected for normal internet traffic.", steps: ["Reconnect to the intended Wi-Fi or Ethernet network.", "If this persists, inspect Windows network settings or contact your administrator."] },
+                dns_failure: { reason: "The system DNS resolver failed to resolve test names.", steps: ["Retry the scan and check whether multiple websites fail.", "If the problem persists, reconnect to the network or check router DNS settings."] },
+                dns_partial: { reason: "Some DNS lookups failed while others succeeded.", steps: ["Retry to rule out a temporary resolver issue.", "Check whether the failures affect particular domains or services."] },
+                dns_slow: { reason: "DNS responses took longer than expected.", steps: ["Retry the scan to confirm the delay.", "Compare another network before changing DNS settings."] },
+                https_blocked: { reason: "One or more HTTPS test endpoints could not be reached; this does not prove all HTTPS traffic is blocked.", steps: ["Check the endpoint results and retry.", "If multiple services fail, inspect VPN, proxy, or managed-network restrictions without disabling security protections."] },
+                packet_loss: { reason: "Many TCP connection probes failed; this is not a direct measurement of all network packet loss.", steps: ["Move closer to the Wi-Fi router or test Ethernet if available.", "Repeat the scan and compare results at another time."] },
+                high_latency: { reason: "TCP connection response times were high; distance, congestion, VPNs, and Wi-Fi can contribute.", steps: ["Pause heavy downloads and retry.", "Compare Wi-Fi with Ethernet or another network if possible."] },
+                high_jitter: { reason: "Connection response times varied substantially between probes.", steps: ["Retry when the network is less busy.", "Compare a wired connection or a closer Wi-Fi position."] },
+                partial_reach: { reason: "Some test targets failed while others were reachable; a target or route may be blocking probes.", steps: ["Retry the scan to confirm the result.", "Check whether the affected service itself is unavailable."] },
+                healthy: { reason: "These checks did not detect a connectivity problem; download and upload throughput are not measured here.", steps: ["Use Speed Test to measure throughput.", "Run diagnostics again if the issue returns."] },
+              };
+              const item = advice[finding.id];
+              if (!item) return null;
+              return (
+                <li key={finding.id} className="text-sm">
+                  <p className="font-medium text-slate-100">{finding.title}</p>
+                  <p className="mt-1 text-slate-400">Why: {item.reason}</p>
+                  <ul className="mt-1 list-disc space-y-1 pl-5 text-slate-400">
+                    {item.steps.map((step) => <li key={step}>{step}</li>)}
+                  </ul>
+                </li>
+              );
+            })}
+          </ul>
+          <p className="mt-3 text-xs text-slate-500">These are suggested checks, not automatic repairs. Run diagnostics again after a change to verify whether the result improved.</p>
+        </Card>
+      ) : null}
+
       <Card title="Adapters and gateway">
         <p className="mb-3 text-sm text-slate-300">
           Default gateway: { !gw ? "not measured" : gw.state === "reachable" ? `answered in ${fmtMs(gw.rtt_ms)}` : gw.state === "inconclusive" ? "no answer on probed ports (inconclusive: many routers ignore probes)" : `unavailable (${gw.reason})` }
