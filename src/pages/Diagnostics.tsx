@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Card, ConfidenceTag, SeverityDot } from "../components/ui";
-import { fmtMs, fmtPct, fmtTime } from "../lib/format";
+import { fmtMs, fmtTime } from "../lib/format";
 import type { ScanReport } from "../types";
 
 type MobileRow = { label: string; value: ReactNode };
@@ -77,7 +77,8 @@ export default function Diagnostics({ report }: { report: ScanReport | null }) {
                 dns_partial: { reason: "Some DNS lookups failed while others succeeded.", steps: ["Retry to rule out a temporary resolver issue.", "Check whether the failures affect particular domains or services."] },
                 dns_slow: { reason: "DNS responses took longer than expected.", steps: ["Retry the scan to confirm the delay.", "Compare another network before changing DNS settings."] },
                 https_blocked: { reason: "One or more HTTPS test endpoints could not be reached; this does not prove all HTTPS traffic is blocked.", steps: ["Check the endpoint results and retry.", "If multiple services fail, inspect VPN, proxy, or managed-network restrictions without disabling security protections."] },
-                packet_loss: { reason: "Many TCP connection probes failed; this is not a direct measurement of all network packet loss.", steps: ["Move closer to the Wi-Fi router or test Ethernet if available.", "Repeat the scan and compare results at another time."] },
+                tcp_connect_failures: { reason: "Some TCP connection attempts timed out, failed during name resolution, or had another transport error. Refused ports are reported separately. IP packet loss is not measured.", steps: ["Check whether the target service and port should accept connections.", "Repeat the scan and compare another target or network path."] },
+                tcp_port_refused: { reason: "The remote host responded, but this port did not accept a connection.", steps: ["Check that the selected service is expected to be listening on this port."] },
                 high_latency: { reason: "TCP connection response times were high; distance, congestion, VPNs, and Wi-Fi can contribute.", steps: ["Pause heavy downloads and retry.", "Compare Wi-Fi with Ethernet or another network if possible."] },
                 high_jitter: { reason: "Connection response times varied substantially between probes.", steps: ["Retry when the network is less busy.", "Compare a wired connection or a closer Wi-Fi position."] },
                 partial_reach: { reason: "Some test targets failed while others were reachable; a target or route may be blocking probes.", steps: ["Retry the scan to confirm the result.", "Check whether the affected service itself is unavailable."] },
@@ -164,17 +165,17 @@ export default function Diagnostics({ report }: { report: ScanReport | null }) {
         )}
       </Card>
 
-      <Card title="Latency, jitter and loss (TCP connect)">
+      <Card title="TCP-connect latency and outcomes">
         {report.latency.length === 0 ? <p className="text-sm text-slate-500">Not measured.</p> : (
           <>
             <div className="desktop-data-table">
               <table className="w-full text-left text-sm">
-                <thead className="text-xs text-slate-500"><tr><th className="py-2 pr-3">Target</th><th className="pr-3">Median</th><th className="pr-3">p95</th><th className="pr-3">Jitter</th><th className="pr-3">Loss</th><th>Probes</th></tr></thead>
+                <thead className="text-xs text-slate-500"><tr><th className="py-2 pr-3">Target</th><th className="pr-3">Median</th><th className="pr-3">p95</th><th className="pr-3">Jitter</th><th className="pr-3">Connected</th><th className="pr-3">Refused</th><th className="pr-3">Resolve timeout</th><th className="pr-3">Connect timeout</th><th className="pr-3">DNS failures</th><th className="pr-3">Other errors</th><th>IP packet loss</th></tr></thead>
                 <tbody>
                   {report.latency.map((item) => (
                     <tr key={item.target} className="border-t border-ink-700">
                       <td className="py-2 pr-3">{item.target}</td><td className="pr-3">{fmtMs(item.stats.median_ms)}</td><td className="pr-3">{fmtMs(item.stats.p95_ms)}</td>
-                      <td className="pr-3">{fmtMs(item.stats.jitter_ms)}</td><td className="pr-3">{fmtPct(item.stats.loss_pct, 0)}</td><td>{item.stats.received}/{item.stats.sent}</td>
+                      <td className="pr-3">{fmtMs(item.stats.jitter_ms)}</td><td className="pr-3">{item.stats.received}/{item.stats.sent}</td><td className="pr-3">{item.outcomes.length ? item.stats.refused : "Unavailable"}</td><td className="pr-3">{item.outcomes.length ? item.stats.resolution_timeouts : "Unavailable"}</td><td className="pr-3">{item.outcomes.length ? item.stats.connection_timeouts : "Unavailable"}</td><td className="pr-3">{item.outcomes.length ? item.stats.resolution_failed : "Unavailable"}</td><td className="pr-3">{item.outcomes.length ? item.stats.transport_errors : "Unavailable"}</td><td>Not measured</td>
                     </tr>
                   ))}
                 </tbody>
@@ -186,8 +187,13 @@ export default function Diagnostics({ report }: { report: ScanReport | null }) {
                   { label: "Median", value: fmtMs(item.stats.median_ms) },
                   { label: "95th percentile", value: fmtMs(item.stats.p95_ms) },
                   { label: "Jitter", value: fmtMs(item.stats.jitter_ms) },
-                  { label: "Loss", value: fmtPct(item.stats.loss_pct, 0) },
-                  { label: "Probes received", value: `${item.stats.received}/${item.stats.sent}` },
+                  { label: "TCP connections", value: `${item.stats.received}/${item.stats.sent} connected` },
+                  { label: "Connection refusals", value: item.outcomes.length ? item.stats.refused : "Unavailable (legacy report)" },
+                  { label: "DNS resolution timeouts", value: item.outcomes.length ? item.stats.resolution_timeouts : "Unavailable (legacy report)" },
+                  { label: "TCP connection timeouts", value: item.outcomes.length ? item.stats.connection_timeouts : "Unavailable (legacy report)" },
+                  { label: "DNS resolution failures", value: item.outcomes.length ? item.stats.resolution_failed : "Unavailable (legacy report)" },
+                  { label: "Other transport errors", value: item.outcomes.length ? item.stats.transport_errors : "Unavailable (legacy report)" },
+                  { label: "IP packet loss", value: "Not measured" },
                 ]} />
               ))}
             </div>

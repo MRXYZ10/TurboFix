@@ -59,8 +59,6 @@ pub struct Evidence<'a> {
 pub const SLOW_DNS_MS: f64 = 300.0;
 pub const HIGH_LATENCY_MS: f64 = 150.0;
 pub const HIGH_JITTER_MS: f64 = 30.0;
-pub const LOSS_WARN_PCT: f64 = 2.0;
-pub const LOSS_CRIT_PCT: f64 = 10.0;
 
 fn finding(
     id: &str,
@@ -83,7 +81,7 @@ fn finding(
 pub fn standard_limitations() -> Vec<String> {
     vec![
         "Latency is measured as TCP connect time, not ICMP ping, so values can differ from the ping command.".into(),
-        "Packet loss is the share of failed TCP probes; a firewall that drops probes can look like loss.".into(),
+        "IP packet loss is not measured. TCP connect failures have separate causes (refusal, timeout, DNS resolution, or transport error) and are not packet-loss measurements.".into(),
         "DNS timings use the Windows/OS resolver and may be served from its cache.".into(),
         "Download/upload throughput is not measured by this connectivity scan; use the separate Speed Test page for a measured result.".into(),
         "This scan cannot identify problems inside your ISP's network; it can only show where measurements fail.".into(),
@@ -101,9 +99,14 @@ pub fn diagnose(e: &Evidence) -> Diagnosis {
     let dns_total = e.dns.len();
     let https_ok = e.https.iter().filter(|h| h.ok).count();
     let https_total = e.https.len();
-    let tcp_ok = e.latency.iter().filter(|l| l.stats.received > 0).count();
+    let tcp_connected = e.latency.iter().filter(|l| l.stats.connected > 0).count();
+    let tcp_reachable = e
+        .latency
+        .iter()
+        .filter(|l| l.stats.connected + l.stats.refused > 0)
+        .count();
     let tcp_total = e.latency.len();
-    let external_ok = tcp_ok > 0 || https_ok > 0;
+    let external_ok = tcp_reachable > 0 || https_ok > 0;
 
     // 1. No usable interface
     if !any_up {
@@ -123,7 +126,7 @@ pub fn diagnose(e: &Evidence) -> Diagnosis {
     }
 
     // 2. Complete failure of everything external
-    let everything_failed = tcp_total > 0 && tcp_ok == 0 && https_ok == 0 && dns_ok == 0;
+    let everything_failed = tcp_total > 0 && tcp_reachable == 0 && https_ok == 0 && dns_ok == 0;
     if everything_failed {
         match e.gateway {
             GatewayStatus::Reachable { rtt_ms } => f.push(finding(
@@ -159,14 +162,14 @@ pub fn diagnose(e: &Evidence) -> Diagnosis {
     }
 
     // 3. DNS failing while raw IP connectivity works
-    if dns_total > 0 && dns_ok == 0 && tcp_ok > 0 {
+    if dns_total > 0 && dns_ok == 0 && tcp_connected > 0 {
         f.push(finding(
             "dns_failure",
             Severity::Critical,
             Confidence::High,
             "DNS lookups fail while direct IP connections work",
             "Name resolution is broken but the internet itself is reachable by IP address. Websites will fail to load by name. The configured DNS server is the likely cause.",
-            vec![format!("0/{dns_total} DNS lookups succeeded"), format!("{tcp_ok}/{tcp_total} TCP targets reachable by IP")],
+                vec![format!("0/{dns_total} DNS lookups succeeded"), format!("{tcp_connected}/{tcp_total} targets completed a TCP connection")],
         ));
     } else if dns_total > 0 && dns_ok < dns_total {
         f.push(finding(
@@ -195,7 +198,7 @@ pub fn diagnose(e: &Evidence) -> Diagnosis {
     }
 
     // 5. HTTPS failing while TCP works
-    if https_total > 0 && https_ok == 0 && tcp_ok > 0 && dns_ok > 0 {
+    if https_total > 0 && https_ok == 0 && tcp_connected > 0 && dns_ok > 0 {
         f.push(finding(
             "https_blocked",
             Severity::Warning,
@@ -206,23 +209,25 @@ pub fn diagnose(e: &Evidence) -> Diagnosis {
         ));
     }
 
-    // 6. Latency / jitter / loss per target
-    for l in e.latency.iter().filter(|l| l.stats.received > 0) {
+    // 6. TCP-connect latency and jitter. Connection failures are categorized,
+    // never presented as IP packet loss.
+    for l in e.latency {
         let s = &l.stats;
-        if s.loss_pct >= LOSS_CRIT_PCT {
-            f.push(finding("packet_loss", Severity::Critical, Confidence::Medium, "High probe loss", "Many connection probes failed. On Wi-Fi this is commonly weak signal or interference; on any link it can indicate congestion.", vec![format!("{}: {:.0}% of {} probes failed", l.target, s.loss_pct, s.sent)]));
-        } else if s.loss_pct >= LOSS_WARN_PCT {
+        if s.timed_out + s.resolution_failed + s.transport_errors > 0 {
             f.push(finding(
-                "packet_loss",
+                "tcp_connect_failures",
                 Severity::Warning,
-                Confidence::Medium,
-                "Some probe loss",
-                "A few connection probes failed, which can cause stutter in calls and games.",
-                vec![format!(
-                    "{}: {:.0}% of {} probes failed",
-                    l.target, s.loss_pct, s.sent
-                )],
+                Confidence::Low,
+                "Some TCP connection attempts did not complete",
+                "A timeout or transport error does not identify where the cause lies. DNS resolution failures indicate a name lookup problem for this target. These checks do not measure IP packet loss.",
+                vec![format!("{}: {} timeout(s), {} resolution failure(s), {} other transport error(s) across {} attempts", l.target, s.timed_out, s.resolution_failed, s.transport_errors, s.sent)],
             ));
+        }
+        if s.refused > 0 {
+            f.push(finding("tcp_port_refused", Severity::Info, Confidence::High, "TCP connection was refused", "A TCP reset was returned, commonly because the selected port is closed. A firewall or intermediary can also generate a reset. This is distinct from a timeout and is not evidence of IP packet loss.", vec![format!("{}: {} connection refusal(s)", l.target, s.refused)]));
+        }
+        if s.received == 0 {
+            continue;
         }
         if let Some(m) = s.median_ms {
             if m > HIGH_LATENCY_MS {
@@ -237,8 +242,8 @@ pub fn diagnose(e: &Evidence) -> Diagnosis {
     }
 
     // 7. Reachability of some targets only
-    if tcp_total > 1 && tcp_ok > 0 && tcp_ok < tcp_total {
-        f.push(finding("partial_reach", Severity::Warning, Confidence::Low, "Some test targets are unreachable", "At least one probe target could not be reached while others could. The target itself or a route to it may be blocked.", e.latency.iter().filter(|l| l.stats.received == 0).map(|l| format!("{}: {}", l.target, l.last_error.clone().unwrap_or_default())).collect()));
+    if tcp_total > 1 && tcp_reachable > 0 && tcp_reachable < tcp_total {
+        f.push(finding("partial_reach", Severity::Warning, Confidence::Low, "Some TCP targets did not accept a connection", "At least one target did not complete a TCP connection while another did. A refusal means a TCP reset was returned; a timeout is inconclusive. This does not measure IP packet loss.", e.latency.iter().filter(|l| l.stats.received == 0).map(|l| format!("{}: {} refusal(s), {} timeout(s), {} resolution failure(s), {} transport error(s)", l.target, l.stats.refused, l.stats.timed_out, l.stats.resolution_failed, l.stats.transport_errors)).collect()));
     }
 
     let status = if !external_ok && tcp_total + https_total == 0 {
@@ -263,7 +268,8 @@ pub fn diagnose(e: &Evidence) -> Diagnosis {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stats::summarize;
+    use crate::network::ProbeOutcome;
+    use crate::stats::summarize_outcomes;
 
     fn iface(up: bool) -> InterfaceInfo {
         InterfaceInfo {
@@ -297,10 +303,20 @@ mod tests {
         }
     }
     fn lat(samples: Vec<Option<f64>>) -> LatencyResult {
+        let outcomes: Vec<_> = samples
+            .iter()
+            .map(|v| match v {
+                Some(ms) => ProbeOutcome::Connected { latency_ms: *ms },
+                None => ProbeOutcome::Timeout {
+                    stage: crate::network::ProbeStage::Connection,
+                },
+            })
+            .collect();
         LatencyResult {
             target: "1.1.1.1:443".into(),
-            stats: summarize(&samples),
+            stats: summarize_outcomes(&outcomes),
             samples,
+            outcomes,
             last_error: Some("timed out".into()),
         }
     }
@@ -406,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn loss_jitter_latency_thresholds() {
+    fn tcp_failures_never_become_packet_loss_findings() {
         let l = lat(vec![
             Some(200.0),
             None,
@@ -426,9 +442,33 @@ mod tests {
             &[https(true)],
             &[l],
         );
-        assert!(has(&d, "packet_loss"));
+        assert!(has(&d, "tcp_connect_failures"));
+        assert!(!has(&d, "packet_loss"));
         assert!(has(&d, "high_latency"));
         assert!(has(&d, "high_jitter"));
+    }
+
+    #[test]
+    fn refused_port_is_reachability_evidence_not_a_network_loss_finding() {
+        let outcomes = vec![ProbeOutcome::ConnectionRefused { latency_ms: 1.0 }];
+        let refused = LatencyResult {
+            target: "192.0.2.1:443".into(),
+            stats: summarize_outcomes(&outcomes),
+            samples: vec![None],
+            outcomes,
+            last_error: Some("connection refused".into()),
+        };
+        let d = run(
+            &[iface(true)],
+            GatewayStatus::Reachable { rtt_ms: 1.0 },
+            &[dns(true, 10.0)],
+            &[https(true)],
+            &[refused],
+        );
+        assert!(has(&d, "tcp_port_refused"));
+        assert!(!has(&d, "external_unreachable"));
+        assert!(!has(&d, "packet_loss"));
+        assert_eq!(d.status, OverallStatus::Online);
     }
 
     #[test]

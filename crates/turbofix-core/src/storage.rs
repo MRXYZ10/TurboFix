@@ -4,6 +4,7 @@
 use crate::config::ScanConfig;
 use crate::diagnosis::OverallStatus;
 use crate::error::{CoreError, Result};
+use crate::monitor::MonitorSessionSummary;
 use crate::performance::PerfSnapshot;
 use crate::scan::{ScanReport, ScanStatus};
 use crate::speedtest::SpeedTestResult;
@@ -53,10 +54,32 @@ CREATE TABLE speed_tests (
 );
 CREATE INDEX idx_speed_tests_started ON speed_tests(started_at DESC, id DESC);
 ",
+    "
+CREATE TABLE monitor_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    summary_json TEXT NOT NULL
+);
+CREATE INDEX idx_monitor_sessions_started ON monitor_sessions(started_at DESC, id DESC);
+",
+    "
+CREATE TABLE optimizer_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    action TEXT NOT NULL,
+    execution_result TEXT NOT NULL,
+    before_json TEXT NOT NULL,
+    after_json TEXT,
+    comparisons_json TEXT NOT NULL
+);
+CREATE INDEX idx_optimizer_runs_at ON optimizer_runs(at DESC, id DESC);
+",
 ];
 
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 const MAX_PERF_ROWS: u32 = 20_000;
+const MAX_OPTIMIZER_RUNS: u32 = 100;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScanSummary {
@@ -77,6 +100,17 @@ pub struct PerfPoint {
     pub cpu_pct: f64,
     pub mem_used: u64,
     pub mem_total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OptimizerRun {
+    pub id: i64,
+    pub at: String,
+    pub action: String,
+    pub execution_result: String,
+    pub before: crate::scan::ScanReport,
+    pub after: Option<crate::scan::ScanReport>,
+    pub comparisons: Vec<crate::optimizer::MeasurementComparison>,
 }
 
 pub struct Storage {
@@ -144,10 +178,9 @@ impl Storage {
             .and_then(|v| v.as_str().map(str::to_owned));
         let findings = r.diagnosis.as_ref().map(|d| d.findings.len()).unwrap_or(0) as i64;
         let medians: Vec<f64> = r.latency.iter().filter_map(|l| l.stats.median_ms).collect();
-        let (sent, received) = r.latency.iter().fold((0u32, 0u32), |(s, rc), l| {
-            (s + l.stats.sent, rc + l.stats.received)
-        });
-        let loss = (sent > 0).then(|| crate::stats::loss_pct(sent, received));
+        // The legacy column remains for database compatibility. It previously
+        // held TCP probe failure rates; those are not IP packet-loss data.
+        let loss: Option<f64> = None;
         let dns: Vec<f64> = r.dns.iter().filter_map(|d| d.time_ms).collect();
         let mut stored = r.clone();
         stored.id = None;
@@ -191,7 +224,8 @@ impl Storage {
                     .and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok()),
                 finding_count: r.get::<_, i64>(5)? as u32,
                 median_latency_ms: r.get(6)?,
-                loss_pct: r.get(7)?,
+                // Historical values used to conflate TCP failures with packet loss.
+                loss_pct: None,
                 median_dns_ms: r.get(8)?,
             })
         })?;
@@ -214,7 +248,63 @@ impl Storage {
         let scans = conn.execute("DELETE FROM scans", [])? as u64;
         let speeds = conn.execute("DELETE FROM speed_tests", [])? as u64;
         let perf = conn.execute("DELETE FROM perf_samples", [])? as u64;
-        Ok(scans + speeds + perf)
+        let monitors = conn.execute("DELETE FROM monitor_sessions", [])? as u64;
+        let optimizer = conn.execute("DELETE FROM optimizer_runs", [])? as u64;
+        Ok(scans + speeds + perf + monitors + optimizer)
+    }
+
+    pub fn save_optimizer_run(
+        &self,
+        action: &str,
+        result: &str,
+        before: &ScanReport,
+        after: Option<&ScanReport>,
+    ) -> Result<i64> {
+        if !crate::optimizer::action_supported(action) {
+            return Err(CoreError::Storage("unsupported optimizer action".into()));
+        }
+        let comparisons = after
+            .map(|a| crate::optimizer::compare(before, a))
+            .unwrap_or_default();
+        let conn = self.lock()?;
+        conn.execute("INSERT INTO optimizer_runs (at,action,execution_result,before_json,after_json,comparisons_json) VALUES (?1,?2,?3,?4,?5,?6)", params![chrono::Utc::now().to_rfc3339(), action, result, serde_json::to_string(before)?, after.map(serde_json::to_string).transpose()?, serde_json::to_string(&comparisons)?])?;
+        conn.execute(
+            "DELETE FROM optimizer_runs WHERE id NOT IN (SELECT id FROM optimizer_runs ORDER BY at DESC,id DESC LIMIT ?1)",
+            [MAX_OPTIMIZER_RUNS],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn optimizer_history(&self, limit: u32) -> Result<Vec<OptimizerRun>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare("SELECT id,at,action,execution_result,before_json,after_json,comparisons_json FROM optimizer_runs ORDER BY at DESC,id DESC LIMIT ?1")?;
+        let rows = stmt.query_map([limit.min(500)], |r| {
+            let before: String = r.get(4)?;
+            let after: Option<String> = r.get(5)?;
+            let comparisons: String = r.get(6)?;
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                before,
+                after,
+                comparisons,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, at, action, execution_result, before, after, comparisons) = row?;
+            Ok(OptimizerRun {
+                id,
+                at,
+                action,
+                execution_result,
+                before: serde_json::from_str(&before)?,
+                after: after.map(|x| serde_json::from_str(&x)).transpose()?,
+                comparisons: serde_json::from_str(&comparisons)?,
+            })
+        })
+        .collect()
     }
 
     // ---- speed-test history -------------------------------------------
@@ -263,6 +353,42 @@ impl Storage {
                 upload_duration_ms: r.get::<_, i64>(8)? as u64,
                 endpoint_label: r.get(9)?,
             })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn save_monitor_session(
+        &self,
+        summary: &MonitorSessionSummary,
+    ) -> Result<MonitorSessionSummary> {
+        let json = serde_json::to_string(summary)?;
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO monitor_sessions (started_at, ended_at, summary_json) VALUES (?1,?2,?3)",
+            params![summary.started_at, summary.ended_at, json],
+        )?;
+        let id = conn.last_insert_rowid();
+        conn.execute("DELETE FROM monitor_sessions WHERE id NOT IN (SELECT id FROM monitor_sessions ORDER BY started_at DESC, id DESC LIMIT 100)", [])?;
+        let mut saved = summary.clone();
+        saved.id = Some(id);
+        Ok(saved)
+    }
+
+    pub fn list_monitor_sessions(&self, limit: u32) -> Result<Vec<MonitorSessionSummary>> {
+        let conn = self.lock()?;
+        let mut st = conn.prepare("SELECT id, summary_json FROM monitor_sessions ORDER BY started_at DESC, id DESC LIMIT ?1")?;
+        let rows = st.query_map([limit.min(100)], |row| {
+            let id: i64 = row.get(0)?;
+            let mut summary: MonitorSessionSummary =
+                serde_json::from_str(&row.get::<_, String>(1)?).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+            summary.id = Some(id);
+            Ok(summary)
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
@@ -360,6 +486,76 @@ impl Storage {
 mod tests {
     use super::*;
 
+    fn optimizer_test_scan() -> ScanReport {
+        use crate::scan::{ScanStatus, UnavailableMetric};
+        ScanReport {
+            id: None,
+            app_version: "test".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+            duration_ms: 1,
+            status: ScanStatus::Completed,
+            error: None,
+            platform: crate::platform::platform_info(),
+            config: ScanConfig::default(),
+            interfaces: vec![],
+            gateway: None,
+            dns: vec![],
+            https: vec![],
+            latency: vec![],
+            diagnosis: None,
+            performance: None,
+            unavailable: vec![UnavailableMetric {
+                name: "throughput".into(),
+                reason: "not measured".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn optimizer_history_is_bounded_and_preserves_failure_state() {
+        let storage = Storage::open_in_memory().unwrap();
+        let scan = optimizer_test_scan();
+        for _ in 0..=MAX_OPTIMIZER_RUNS {
+            storage
+                .save_optimizer_run("flush_dns_cache", "failed", &scan, None)
+                .unwrap();
+        }
+        let history = storage.optimizer_history(500).unwrap();
+        assert_eq!(history.len(), MAX_OPTIMIZER_RUNS as usize);
+        assert_eq!(history[0].execution_result, "failed");
+        assert!(history[0].after.is_none());
+        assert!(history[0].at.contains('T'));
+    }
+
+    #[test]
+    fn v2_database_migrates_additively_and_preserves_existing_scan_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.execute_batch(MIGRATIONS[1]).unwrap();
+        conn.execute_batch(MIGRATIONS[2]).unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
+        conn.execute(
+            "INSERT INTO scans (started_at, duration_ms, status, finding_count, report_json) VALUES ('2026-01-01T00:00:00Z', 10, 'completed', 0, '{}')",
+            [],
+        ).unwrap();
+
+        let storage = Storage::init(conn).unwrap();
+        assert_eq!(storage.schema_version().unwrap(), 4);
+        let scans = storage.list_scans(10).unwrap();
+        assert_eq!(scans.len(), 1);
+        assert_eq!(scans[0].started_at, "2026-01-01T00:00:00Z");
+        let monitor_tables: i64 = storage
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='monitor_sessions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(monitor_tables, 1);
+    }
+
     #[test]
     fn corrupt_stored_config_falls_back_to_defaults() {
         let s = Storage::open_in_memory().unwrap();
@@ -396,6 +592,72 @@ mod tests {
         assert_eq!(history[0].upload_mbps, 12.5);
         assert_eq!(s.clear_history().unwrap(), 1);
         assert!(s.list_speed_tests(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn monitor_session_summary_roundtrips_and_history_is_bounded() {
+        use crate::monitor::TargetMonitorSummary;
+        let s = Storage::open_in_memory().unwrap();
+        assert_eq!(s.schema_version().unwrap(), 4);
+        let summary = MonitorSessionSummary {
+            id: None,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            ended_at: "2026-01-01T00:00:01Z".into(),
+            duration_ms: 1000,
+            interval_ms: 500,
+            timeout_ms: 1000,
+            total_attempts: 1,
+            successful_attempts: 1,
+            failed_attempts: 0,
+            targets: vec![TargetMonitorSummary {
+                target: "127.0.0.1:80".into(),
+                attempts: 1,
+                successful_attempts: 1,
+                failed_attempts: 0,
+                connection_refusals: 0,
+                resolution_failures: 0,
+                resolution_timeouts: 0,
+                connection_timeouts: 0,
+                transport_errors: 0,
+                latest_success_latency_ms: Some(1.25),
+                jitter_ms: None,
+                last_result: Some(crate::monitor::MonitorProbe {
+                    at: "2026-01-01T00:00:00Z".into(),
+                    outcome: crate::network::ProbeOutcome::Connected { latency_ms: 1.25 },
+                }),
+            }],
+        };
+        let saved = s.save_monitor_session(&summary).unwrap();
+        assert!(saved.id.is_some());
+        assert_eq!(s.list_monitor_sessions(10).unwrap()[0], saved);
+        for i in 0..105 {
+            let mut next = summary.clone();
+            next.started_at = format!("2026-01-{:02}T00:00:00Z", (i % 28) + 1);
+            s.save_monitor_session(&next).unwrap();
+        }
+        assert_eq!(s.list_monitor_sessions(500).unwrap().len(), 100);
+    }
+
+    #[test]
+    fn monitor_probe_serialization_preserves_outcome_category() {
+        let values = [
+            crate::network::ProbeOutcome::Connected { latency_ms: 2.5 },
+            crate::network::ProbeOutcome::ConnectionRefused { latency_ms: 1.0 },
+            crate::network::ProbeOutcome::Timeout {
+                stage: crate::network::ProbeStage::Connection,
+            },
+            crate::network::ProbeOutcome::ResolutionFailed {
+                message: "resolver error".into(),
+            },
+            crate::network::ProbeOutcome::TransportError {
+                message: "network error".into(),
+            },
+        ];
+        for value in values {
+            let encoded = serde_json::to_string(&value).unwrap();
+            let decoded: crate::network::ProbeOutcome = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, value);
+        }
     }
 
     /// Regression: without serde_json's `float_roundtrip` feature, stored measurements

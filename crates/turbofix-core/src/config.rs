@@ -74,7 +74,7 @@ pub fn validate_hostname(host: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_target(t: &str) -> Result<()> {
+pub fn validate_tcp_target(t: &str) -> Result<()> {
     if let Ok(addr) = t.parse::<SocketAddr>() {
         return if addr.port() == 0 {
             bad("target port must not be 0")
@@ -131,7 +131,7 @@ impl ScanConfig {
             .try_for_each(|h| validate_hostname(h))?;
         self.latency_targets
             .iter()
-            .try_for_each(|t| validate_target(t))?;
+            .try_for_each(|t| validate_tcp_target(t))?;
         self.https_endpoints
             .iter()
             .try_for_each(|u| validate_https(u))?;
@@ -200,7 +200,7 @@ mod tests {
             "example.com:80",
             "127.0.0.1:9",
         ] {
-            validate_target(t).unwrap();
+            validate_tcp_target(t).unwrap();
         }
         for t in [
             "1.1.1.1",
@@ -210,7 +210,7 @@ mod tests {
             ":443",
             "x:y",
         ] {
-            assert!(validate_target(t).is_err(), "{t:?}");
+            assert!(validate_tcp_target(t).is_err(), "{t:?}");
         }
     }
 

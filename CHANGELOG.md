@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.4 — Evidence-based diagnostics and optimization
+
+- Report TCP diagnostic outcomes distinctly and label TCP-connect measurements accurately; IP packet loss is not measured.
+- Add bounded, cancellable multi-target monitoring with jitter reporting and SQLite session history.
+- Add evidence-based DNS cache flush recommendations with an explanation preview, explicit confirmation, fixed action validation, repeat measurements, and before/after history.
+- Preserve additive SQLite migration and compatibility with existing scan and history records.
+- Display the package-metadata version and surface retryable frontend startup checks when backend initialization reports a failure.
+- No arbitrary shell commands, broad registry changes, security disabling, or Windows service disabling are introduced.
+
 ## 0.3.0 — Premium UX and release hardening
 
 - Reworked the desktop shell with a premium dark visual system, clearer navigation groups, active-state affordances, privacy messaging, contextual page descriptions, and a consistent top bar.

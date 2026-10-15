@@ -4,7 +4,7 @@ import { invoke as invokeMobileCommand } from "@tauri-apps/api/core";
 // a clear error rather than returning invented data.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ApiError, Capability, PerfPoint, PerfSnapshot, ScanConfig, ScanProgress, ScanReport, ScanSummary, SpeedTestResult, WifiSnapshot, QuickFixResult, CleanupPreview, CleanupResult } from "./types";
+import type { ApiError, Capability, PerfPoint, PerfSnapshot, ProbeOutcome, ScanConfig, ScanProgress, ScanReport, ScanSummary, SpeedTestResult, WifiSnapshot, CleanupPreview, CleanupResult, MonitorConfig, MonitorSnapshot, MonitorSessionSummary, OptimizerExecution } from "./types";
 
 export function toApiError(e: unknown): ApiError {
   if (e && typeof e === "object" && "code" in e && "message" in e) {
@@ -32,9 +32,14 @@ export const api = {
   saveConfig: (config: ScanConfig) => call<void>("save_config", { config }),
   wifiSnapshot: () => call<WifiSnapshot>("wifi_snapshot"),
   runSpeedTest: () => call<SpeedTestResult>("run_speed_test"),
-  measureTcpPing: (target: string) => call<number | null>("measure_tcp_ping", { target }),
+  measureTcpPing: (target: string) => call<ProbeOutcome>("measure_tcp_ping", { target }),
+  startNetworkMonitor: (config: MonitorConfig) => call<MonitorSnapshot>("start_network_monitor", { config }),
+  stopNetworkMonitor: () => call<boolean>("stop_network_monitor"),
+  getNetworkMonitorSnapshot: () => call<MonitorSnapshot | null>("get_network_monitor_snapshot"),
+  listMonitorSessions: (limit: number) => call<MonitorSessionSummary[]>("list_monitor_sessions", { limit }),
+  onNetworkMonitorUpdate: (cb: (snapshot: MonitorSnapshot) => void) => listen<MonitorSnapshot>("network-monitor-update", (e) => cb(e.payload)),
   listSpeedTests: (limit: number) => call<SpeedTestResult[]>("list_speed_tests", { limit }),
-  flushDnsCache: () => call<QuickFixResult>("flush_dns_cache"),
+  executeOptimizerAction: (action: string, baselineScanId: number) => call<OptimizerExecution>("execute_optimizer_action", { action, baselineScanId }),
   previewTempCleanup: () => call<CleanupPreview>("preview_temp_cleanup"),
   deleteTempFiles: (ids: string[]) => call<CleanupResult>("delete_temp_files", { ids }),
   startScan: () => call<ScanReport>("start_scan"),

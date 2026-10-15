@@ -10,19 +10,44 @@ import { mockApi, report, summary, cleanupPreview, speedTest } from "./helpers";
 
 describe("Overview", () => {
 
+  it("displays the version from package build metadata", async () => {
+    render(<App api={mockApi()} />);
+    expect(await screen.findByText("v0.3.4")).toBeInTheDocument();
+  });
+
+  it("reports failed startup initialization and supports retry", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const getConfig = vi.fn()
+      .mockRejectedValueOnce({ code: "storage_unavailable", message: "database token=secret-value unavailable" })
+      .mockResolvedValueOnce(undefined);
+    render(<App api={mockApi({ getConfig })} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "TurboFix could not finish startup initialization (error storage_unavailable)",
+    );
+    expect(consoleError).toHaveBeenCalledWith("TurboFix startup initialization failed", {
+      code: "storage_unavailable",
+      message: "database token=[redacted] unavailable",
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(getConfig).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/could not finish startup initialization/)).not.toBeInTheDocument();
+    consoleError.mockRestore();
+  });
+
   it("labels every network metric unavailable before any scan, never zero", async () => {
 
     render(<App api={mockApi()} />);
 
     expect(await screen.findByText(/No scan has been run yet/)).toBeInTheDocument();
 
-    for (const label of ["Latency (median)", "Jitter", "Probe loss", "DNS (median)"]) {
+    for (const label of ["Latency (median)", "Jitter", "TCP connect failures", "DNS (median)"]) {
 
      expect(
 
   within(screen.getByTestId("metric-" + label))
 
-    .getByText("Unavailable")
+    .getByText(label === "TCP connect failures" ? "Not measured" : "Unavailable")
 
 ).toBeInTheDocument();
 
@@ -236,21 +261,10 @@ describe("Navigation and honesty", () => {
 
   });
 
-  it("offers a confirmed DNS cache fix in the optimizer", async () => {
-
-    const flushDnsCache = vi.fn().mockResolvedValue({
-
-      succeeded: true,
-
-      title: "DNS cache flushed",
-
-      message: "Windows completed the DNS cache flush.",
-
-      completed_at: "2026-01-01T00:00:00Z",
-
-    });
-
-    render(<App api={mockApi({ flushDnsCache })} />);
+  it("previews evidence and requires confirmation before execution and verification", async () => {
+    const baseline = report({ diagnosis: { status: "degraded", findings: [{ id: "dns_partial", severity: "warning", confidence: "medium", title: "Some DNS lookups failed", detail: "Partial DNS failures", evidence: ["1/2 DNS lookups succeeded"] }], limitations: [] } });
+    const executeOptimizerAction = vi.fn().mockResolvedValue({ result: { succeeded: true, title: "DNS cache flushed", message: "Windows completed the DNS cache flush.", completed_at: "2026-01-01T00:00:00Z" }, after: report(), comparisons: [{ metric: "median_dns_ms", before: 20, after: 19, delta: -1, result: "no measurable improvement" }], verification_error: null, history_id: 3 });
+    render(<App api={mockApi({ startScan: vi.fn().mockResolvedValue(baseline), executeOptimizerAction })} />);
 
     await userEvent.click(
 
@@ -260,18 +274,30 @@ describe("Navigation and honesty", () => {
 
     await userEvent.click(
 
-      screen.getByRole("button", { name: /Review & flush DNS cache/ })
+      screen.getByRole("button", { name: /Run scan for recommendations/ })
 
     );
 
-    expect(flushDnsCache).not.toHaveBeenCalled();
+    expect(await screen.findByText(/1\/2 DNS lookups succeeded/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Review DNS cache flush/ }));
+    expect(executeOptimizerAction).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: /Confirm and apply/ }));
+    await waitFor(() => expect(executeOptimizerAction).toHaveBeenCalledWith("flush_dns_cache", baseline.id));
 
-    await userEvent.click(screen.getByRole("button", { name: /Confirm and flush/ }));
+    expect(await screen.findByText(/DNS cache flushed: Windows completed/)).toBeInTheDocument();
+    expect(screen.getByText(/no measurable improvement/)).toBeInTheDocument();
 
-    await waitFor(() => expect(flushDnsCache).toHaveBeenCalledTimes(1));
+  });
 
-    expect(await screen.findByText("DNS cache flushed")).toBeInTheDocument();
-
+  it("reports an execution failure without claiming the action completed", async () => {
+    const baseline = report({ diagnosis: { status: "degraded", findings: [{ id: "dns_partial", severity: "warning", confidence: "medium", title: "Some DNS lookups failed", detail: "Partial DNS failures", evidence: ["one lookup failed"] }], limitations: [] } });
+    const executeOptimizerAction = vi.fn().mockResolvedValue({ result: { succeeded: false, title: "DNS cache flush failed", message: "Access denied.", completed_at: "2026-01-01T00:00:00Z" }, after: null, comparisons: [], verification_error: null, history_id: 4 });
+    render(<App api={mockApi({ startScan: vi.fn().mockResolvedValue(baseline), executeOptimizerAction })} />);
+    await userEvent.click(await screen.findByRole("button", { name: /Smart optimizer/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /Run scan for recommendations/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Review DNS cache flush/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Confirm and apply/ }));
+    expect(await screen.findByText(/action failed; verification was not run/)).toBeInTheDocument();
   });
 
   it("collapses the sidebar", async () => {
@@ -392,7 +418,7 @@ describe("History", () => {
 
     expect(
 
-      await screen.findByText("Latency, jitter and loss (TCP connect)")
+      await screen.findByText("TCP-connect latency and outcomes")
 
     ).toBeInTheDocument();
 

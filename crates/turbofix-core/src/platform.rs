@@ -49,7 +49,7 @@ pub fn capabilities() -> Vec<Capability> {
     let wifi_status = if cfg!(windows) { Available } else { Planned };
     let windows_fix_status = if cfg!(windows) { Available } else { Planned };
     vec![
-        cap("connectivity", "Connectivity diagnostics", Available, "Adapters, gateway (TCP probe), DNS timing, TCP latency/jitter/loss, HTTPS reachability, with evidence-based findings."),
+        cap("connectivity", "Connectivity diagnostics", Available, "Adapters, gateway (TCP probe), DNS timing, TCP-connect latency/jitter and categorized connection outcomes, HTTPS reachability. IP packet loss is not measured."),
         cap("pc_monitor", "CPU, memory, disk space and process monitoring", Available, "Read-only, via the sysinfo crate. Disk I/O activity is not measured."),
         cap("history", "Scan and speed-test history", Available, "History is stored locally in SQLite; report export is user-initiated. The separate speed test sends synthetic bytes to Cloudflare only when started."),
         cap("speed_test", "Download / upload speed test", Available, "Explicitly runs a bounded test against Cloudflare's public speed-test edge; a small amount of synthetic data is transferred and result saved locally."),

@@ -13,7 +13,16 @@ export interface ApiError {
 export interface LatencyStats {
   sent: number;
   received: number;
-  loss_pct: number;
+  /** Deprecated legacy value; new scans always return null because TCP probes do not measure IP packet loss. */
+  loss_pct: number | null;
+  connected: number;
+  refused: number;
+  timed_out: number;
+  resolution_timeouts: number;
+  connection_timeouts: number;
+  resolution_failed: number;
+  transport_errors: number;
+  tcp_failure_pct: number | null;
   min_ms: number | null;
   median_ms: number | null;
   p95_ms: number | null;
@@ -26,7 +35,42 @@ export interface LatencyResult {
   target: string;
   stats: LatencyStats;
   samples: (number | null)[];
+  outcomes: ProbeOutcome[];
   last_error: string | null;
+}
+
+export type ProbeOutcome =
+  | { outcome: "connected"; latency_ms: number }
+  | { outcome: "connection_refused"; latency_ms: number }
+  | { outcome: "timeout"; stage: "resolution" | "connection" }
+  | { outcome: "resolution_failed"; message: string }
+  | { outcome: "transport_error"; message: string };
+
+export interface MonitorConfig { targets: string[]; interval_ms: number; timeout_ms: number; max_concurrency: number }
+export interface LatencyPoint { at: string; latency_ms: number }
+export interface MonitorProbe { at: string; outcome: ProbeOutcome }
+export interface TargetMonitorSnapshot {
+  target: string; attempts: number; successful_attempts: number; failed_attempts: number;
+  connection_refusals: number; resolution_failures: number; resolution_timeouts: number;
+  connection_timeouts: number; transport_errors: number; latest_success_latency_ms: number | null;
+  latest_success_at: string | null; jitter_ms: number | null; last_result: MonitorProbe | null;
+  recent_results: MonitorProbe[]; latency_history: LatencyPoint[];
+}
+export interface MonitorSnapshot {
+  id: number | null; config: MonitorConfig; started_at: string; elapsed_ms: number; running: boolean;
+  total_attempts: number; successful_attempts: number; failed_attempts: number;
+  targets: TargetMonitorSnapshot[]; last_updated_at: string;
+}
+export interface TargetMonitorSummary {
+  target: string; attempts: number; successful_attempts: number; failed_attempts: number;
+  connection_refusals: number; resolution_failures: number; resolution_timeouts: number;
+  connection_timeouts: number; transport_errors: number; latest_success_latency_ms: number | null;
+  jitter_ms: number | null; last_result: MonitorProbe | null;
+}
+export interface MonitorSessionSummary {
+  id: number | null; started_at: string; ended_at: string; duration_ms: number; interval_ms: number;
+  timeout_ms: number; total_attempts: number; successful_attempts: number; failed_attempts: number;
+  targets: TargetMonitorSummary[];
 }
 
 export interface DnsResult {
@@ -143,6 +187,7 @@ export interface ScanSummary {
   overall: OverallStatus | null;
   finding_count: number;
   median_latency_ms: number | null;
+  /** Deprecated legacy summary; ignored by the current UI. */
   loss_pct: number | null;
   median_dns_ms: number | null;
 }
@@ -221,6 +266,10 @@ export interface QuickFixResult {
   message: string;
   completed_at: string;
 }
+
+export interface OptimizerRecommendation { action: "flush_dns_cache"; title: string; evidence: string[]; expected_effect: string; risks: string; prerequisites: string; verified: boolean; hypothesis: boolean }
+export interface MeasurementComparison { metric: string; before: number | null; after: number | null; delta: number | null; result: string }
+export interface OptimizerExecution { result: QuickFixResult; after: ScanReport | null; comparisons: MeasurementComparison[]; verification_error: string | null; history_id: number | null }
 
 
 export interface CleanupPreviewItem {

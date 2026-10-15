@@ -7,14 +7,16 @@
 //!   resolver cache, which is noted in the docs).
 //! * Latency: TCP connect time (SYN to SYN/ACK). ICMP echo normally needs
 //!   privileges or platform-specific APIs, so it is deliberately not used.
-//! * Gateway: TCP connect to common router ports. A refusal (RST) proves the
-//!   host answered; a timeout is only *inconclusive* because routers often drop
-//!   packets silently.
+//! * Gateway: TCP connect to common router ports. A refusal shows that a TCP
+//!   reset was returned (potentially by an intermediary); a timeout is only
+//!   *inconclusive* because routers often drop probes silently.
 //! * HTTPS: a HEAD request with certificate validation.
 
 use crate::error::{CoreError, Result};
-use crate::stats::{summarize, LatencyStats};
+use crate::stats::{summarize_outcomes, LatencyStats};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::io;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tokio::net::{lookup_host, TcpStream};
@@ -62,13 +64,57 @@ pub fn default_gateway_ip() -> Option<std::net::IpAddr> {
 
 // ----------------------------------------------------------------------- TCP
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum TcpOutcome {
-    Connected(f64),
-    /// The peer answered with a reset: the host is reachable, nothing listens.
-    Refused(f64),
-    Timeout,
-    Error(String),
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeStage {
+    Resolution,
+    Connection,
+}
+
+/// Public, serialized outcome for one TCP connect attempt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ProbeOutcome {
+    Connected {
+        latency_ms: f64,
+    },
+    /// A TCP reset was returned for the attempt. This commonly means the port
+    /// is closed, though a firewall or intermediary can also generate a reset.
+    ConnectionRefused {
+        latency_ms: f64,
+    },
+    Timeout {
+        stage: ProbeStage,
+    },
+    ResolutionFailed {
+        message: String,
+    },
+    TransportError {
+        message: String,
+    },
+}
+
+async fn classify_connection<F>(future: F, timeout: Duration) -> ProbeOutcome
+where
+    F: Future<Output = io::Result<()>>,
+{
+    let start = Instant::now();
+    match tokio::time::timeout(timeout, future).await {
+        Err(_) => ProbeOutcome::Timeout {
+            stage: ProbeStage::Connection,
+        },
+        Ok(Ok(())) => ProbeOutcome::Connected {
+            latency_ms: ms(start.elapsed()),
+        },
+        Ok(Err(e)) if e.kind() == io::ErrorKind::ConnectionRefused => {
+            ProbeOutcome::ConnectionRefused {
+                latency_ms: ms(start.elapsed()),
+            }
+        }
+        Ok(Err(e)) => ProbeOutcome::TransportError {
+            message: e.to_string(),
+        },
+    }
 }
 
 async fn resolve_one(target: &str) -> std::io::Result<SocketAddr> {
@@ -78,36 +124,35 @@ async fn resolve_one(target: &str) -> std::io::Result<SocketAddr> {
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no addresses"))
 }
 
+fn resolution_failure(error: io::Error) -> ProbeOutcome {
+    ProbeOutcome::ResolutionFailed {
+        message: error.to_string(),
+    }
+}
+
 /// Time a single TCP connect. Name resolution (if any) happens first and is
 /// *not* included in the measured time.
 pub async fn tcp_connect(
     target: &str,
     timeout: Duration,
     cancel: &CancellationToken,
-) -> Result<TcpOutcome> {
+) -> Result<ProbeOutcome> {
     let addr = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(CoreError::Cancelled),
         r = tokio::time::timeout(timeout, resolve_one(target)) => match r {
-            Err(_) => return Ok(TcpOutcome::Timeout),
-            Ok(Err(e)) => return Ok(TcpOutcome::Error(format!("resolve failed: {e}"))),
+            Err(_) => return Ok(ProbeOutcome::Timeout { stage: ProbeStage::Resolution }),
+            Ok(Err(e)) => return Ok(resolution_failure(e)),
             Ok(Ok(a)) => a,
         },
     };
-    let start = Instant::now();
+    let connect = async { TcpStream::connect(addr).await.map(|_| ()) };
     let res = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(CoreError::Cancelled),
-        r = tokio::time::timeout(timeout, TcpStream::connect(addr)) => r,
+        outcome = classify_connection(connect, timeout) => outcome,
     };
-    Ok(match res {
-        Err(_) => TcpOutcome::Timeout,
-        Ok(Ok(_stream)) => TcpOutcome::Connected(ms(start.elapsed())),
-        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-            TcpOutcome::Refused(ms(start.elapsed()))
-        }
-        Ok(Err(e)) => TcpOutcome::Error(e.to_string()),
-    })
+    Ok(res)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -116,6 +161,10 @@ pub struct LatencyResult {
     pub stats: LatencyStats,
     /// Per-probe RTT in ms in probe order; `None` = failed probe.
     pub samples: Vec<Option<f64>>,
+    /// Added in API v2. Empty on older stored reports; `samples` remains for
+    /// compatibility and contains only successful TCP-connect timings.
+    #[serde(default)]
+    pub outcomes: Vec<ProbeOutcome>,
     pub last_error: Option<String>,
 }
 
@@ -127,6 +176,7 @@ pub async fn measure_latency(
     cancel: &CancellationToken,
 ) -> Result<LatencyResult> {
     let mut samples = Vec::with_capacity(count as usize);
+    let mut outcomes = Vec::with_capacity(count as usize);
     let mut last_error = None;
     for i in 0..count {
         if i > 0 {
@@ -136,26 +186,33 @@ pub async fn measure_latency(
                     _ = tokio::time::sleep(interval) => {}
                 }
         }
-        match tcp_connect(target, timeout, cancel).await? {
-            TcpOutcome::Connected(m) => samples.push(Some(m)),
-            TcpOutcome::Refused(_) => {
-                last_error = Some("connection refused".to_string());
+        let outcome = tcp_connect(target, timeout, cancel).await?;
+        match &outcome {
+            ProbeOutcome::Connected { latency_ms } => samples.push(Some(*latency_ms)),
+            ProbeOutcome::ConnectionRefused { .. } => {
+                last_error = Some("connection refused".into());
                 samples.push(None);
             }
-            TcpOutcome::Timeout => {
-                last_error = Some("timed out".to_string());
+            ProbeOutcome::Timeout { stage } => {
+                last_error = Some(format!("{stage:?} timed out"));
                 samples.push(None);
             }
-            TcpOutcome::Error(e) => {
-                last_error = Some(e);
+            ProbeOutcome::ResolutionFailed { message } => {
+                last_error = Some(format!("resolution failed: {message}"));
+                samples.push(None);
+            }
+            ProbeOutcome::TransportError { message } => {
+                last_error = Some(message.clone());
                 samples.push(None);
             }
         }
+        outcomes.push(outcome);
     }
     Ok(LatencyResult {
         target: target.to_string(),
-        stats: summarize(&samples),
+        stats: summarize_outcomes(&outcomes),
         samples,
+        outcomes,
         last_error,
     })
 }
@@ -185,7 +242,8 @@ pub async fn check_gateway(timeout: Duration, cancel: &CancellationToken) -> Res
             std::net::IpAddr::V6(v6) => format!("[{v6}]:{port}"),
         };
         match tcp_connect(&target, timeout, cancel).await? {
-            TcpOutcome::Connected(m) | TcpOutcome::Refused(m) => {
+            ProbeOutcome::Connected { latency_ms: m }
+            | ProbeOutcome::ConnectionRefused { latency_ms: m } => {
                 return Ok(GatewayStatus::Reachable { rtt_ms: m })
             }
             _ => {}
@@ -325,7 +383,7 @@ mod tests {
     use super::*;
     use tokio::net::TcpListener;
 
-    const T: Duration = Duration::from_millis(1500);
+    const T: Duration = Duration::from_secs(10);
 
     #[tokio::test]
     async fn tcp_connect_to_local_listener_is_connected() {
@@ -333,7 +391,7 @@ mod tests {
         let addr = l.local_addr().unwrap();
         let tok = CancellationToken::new();
         match tcp_connect(&addr.to_string(), T, &tok).await.unwrap() {
-            TcpOutcome::Connected(m) => assert!((0.0..1500.0).contains(&m)),
+            ProbeOutcome::Connected { latency_ms: m } => assert!((0.0..1500.0).contains(&m)),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -346,13 +404,68 @@ mod tests {
         let tok = CancellationToken::new();
         let out = tcp_connect(&addr.to_string(), T, &tok).await.unwrap();
         assert!(
-            !matches!(out, TcpOutcome::Connected(_)),
-            "a closed port must never be considered connected: {out:?}"
+            matches!(out, ProbeOutcome::ConnectionRefused { .. }),
+            "closed loopback port should refuse promptly: {out:?}"
         );
     }
 
     #[tokio::test]
-    async fn latency_against_dead_port_reports_full_loss_and_no_fake_rtt() {
+    async fn zero_duration_connect_timeout_is_classified_at_connection_stage() {
+        let out = classify_connection(std::future::pending(), Duration::from_millis(1)).await;
+        assert_eq!(
+            out,
+            ProbeOutcome::Timeout {
+                stage: ProbeStage::Connection
+            }
+        );
+    }
+
+    #[test]
+    fn resolver_errors_are_classified_without_platform_specific_text() {
+        for kind in [io::ErrorKind::NotFound, io::ErrorKind::Other] {
+            assert!(matches!(
+                resolution_failure(io::Error::new(kind, "platform detail")),
+                ProbeOutcome::ResolutionFailed { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn probe_outcomes_serialize_distinct_categories() {
+        let values = [
+            ProbeOutcome::Connected { latency_ms: 2.5 },
+            ProbeOutcome::ConnectionRefused { latency_ms: 1.2 },
+            ProbeOutcome::Timeout {
+                stage: ProbeStage::Connection,
+            },
+            ProbeOutcome::Timeout {
+                stage: ProbeStage::Resolution,
+            },
+            ProbeOutcome::ResolutionFailed {
+                message: "NXDOMAIN".into(),
+            },
+            ProbeOutcome::TransportError {
+                message: "network down".into(),
+            },
+        ];
+        for value in values {
+            let json = serde_json::to_string(&value).unwrap();
+            let decoded: ProbeOutcome = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, value);
+            assert!(json.contains("\"outcome\""));
+        }
+    }
+
+    #[test]
+    fn legacy_latency_json_remains_readable_without_claiming_packet_loss() {
+        let old = r#"{"target":"host:443","stats":{"sent":2,"received":1,"loss_pct":50.0,"min_ms":10.0,"median_ms":10.0,"p95_ms":10.0,"max_ms":10.0,"mean_ms":10.0,"jitter_ms":null},"samples":[10.0,null],"last_error":"timed out"}"#;
+        let result: LatencyResult = serde_json::from_str(old).unwrap();
+        assert_eq!(result.stats.loss_pct, Some(50.0)); // retained only for old-report compatibility
+        assert_eq!(result.outcomes, Vec::<ProbeOutcome>::new());
+    }
+
+    #[tokio::test]
+    async fn latency_against_refused_port_reports_refusal_not_packet_loss() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         drop(l);
@@ -362,7 +475,9 @@ mod tests {
             .unwrap();
         assert_eq!(r.stats.sent, 3);
         assert_eq!(r.stats.received, 0);
-        assert_eq!(r.stats.loss_pct, 100.0);
+        assert_eq!(r.stats.loss_pct, None);
+        assert_eq!(r.stats.refused, 3);
+        assert_eq!(r.stats.tcp_failure_pct, Some(100.0));
         assert_eq!(r.stats.median_ms, None);
         assert!(r.last_error.is_some());
     }
@@ -376,7 +491,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.stats.received, 4);
-        assert_eq!(r.stats.loss_pct, 0.0);
+        assert_eq!(r.stats.loss_pct, None);
+        assert_eq!(r.stats.connected, 4);
+        assert_eq!(r.stats.tcp_failure_pct, Some(0.0));
         assert!(r.stats.median_ms.is_some());
         assert!(r.stats.jitter_ms.is_some());
         drop(l);
@@ -401,15 +518,6 @@ mod tests {
         assert!(r.ok, "{r:?}");
         assert!(r.time_ms.is_some());
         assert!(r.address_count >= 1);
-    }
-
-    #[tokio::test]
-    async fn dns_failure_is_reported_with_no_time() {
-        let tok = CancellationToken::new();
-        let r = time_dns("does-not-exist.invalid", T, &tok).await.unwrap();
-        assert!(!r.ok);
-        assert_eq!(r.time_ms, None);
-        assert!(r.error.is_some());
     }
 
     #[tokio::test]

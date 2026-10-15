@@ -9,6 +9,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 #[cfg(windows)]
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -16,6 +17,10 @@ use tokio_util::sync::CancellationToken;
 use turbofix_core::cleanup::{CleanupCache, CleanupPreview, CleanupResult};
 use turbofix_core::config::ScanConfig;
 use turbofix_core::error::CoreError;
+use turbofix_core::monitor::{
+    run_monitor_session, MonitorConfig, MonitorSessionSummary, MonitorSnapshot,
+};
+use turbofix_core::optimizer::{recommendations, MeasurementComparison};
 use turbofix_core::performance::{PerfMonitor, PerfSnapshot};
 use turbofix_core::platform::{capabilities, platform_info, Capability, PlatformInfo};
 use turbofix_core::scan::{run_scan, ScanReport};
@@ -25,6 +30,10 @@ use turbofix_core::wifi::WifiSnapshot;
 use turbofix_core::ApiError;
 
 const PERF_RECORD_EVERY: Duration = Duration::from_secs(15);
+type NetworkMonitorTask = (
+    CancellationToken,
+    tauri::async_runtime::JoinHandle<std::result::Result<(), String>>,
+);
 
 struct AppState {
     storage: Arc<Storage>,
@@ -33,6 +42,9 @@ struct AppState {
     last_perf_record: Mutex<Option<Instant>>,
     speed_test_running: Mutex<bool>,
     cleanup_cache: Mutex<Option<CleanupCache>>,
+    network_monitor: Mutex<Option<NetworkMonitorTask>>,
+    network_snapshot: Arc<Mutex<Option<MonitorSnapshot>>>,
+    network_monitor_active: Arc<AtomicBool>,
 }
 
 type CmdResult<T> = Result<T, ApiError>;
@@ -196,27 +208,121 @@ async fn run_speed_test(state: State<'_, AppState>) -> CmdResult<SpeedTestResult
     Ok(state.storage.save_speed_test(&result)?)
 }
 
-/// One bounded TCP connect measurement. This is not ICMP ping; the destination
-/// must include a port and is supplied by the user.
+/// One bounded TCP connect measurement with explicit outcome. This is not ICMP
+/// ping; the destination must include a port and is supplied by the user.
 #[tauri::command]
-async fn measure_tcp_ping(target: String) -> CmdResult<Option<f64>> {
+async fn measure_tcp_ping(target: String) -> CmdResult<turbofix_core::network::ProbeOutcome> {
     if target.len() > 255 || !target.contains(':') {
         return Err(ApiError::from(CoreError::InvalidConfig(
             "Enter a TCP target as hostname:port or IP:port".into(),
         )));
     }
     let token = CancellationToken::new();
-    match turbofix_core::network::tcp_connect(&target, Duration::from_secs(3), &token).await? {
-        turbofix_core::network::TcpOutcome::Connected(ms)
-        | turbofix_core::network::TcpOutcome::Refused(ms) => Ok(Some(ms)),
-        turbofix_core::network::TcpOutcome::Timeout
-        | turbofix_core::network::TcpOutcome::Error(_) => Ok(None),
-    }
+    Ok(turbofix_core::network::tcp_connect(&target, Duration::from_secs(3), &token).await?)
 }
 
 #[tauri::command]
 fn list_speed_tests(state: State<'_, AppState>, limit: u32) -> CmdResult<Vec<SpeedTestResult>> {
     Ok(state.storage.list_speed_tests(limit)?)
+}
+
+#[tauri::command]
+async fn start_network_monitor(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    config: MonitorConfig,
+) -> CmdResult<MonitorSnapshot> {
+    config.validate()?;
+    let mut slot = state
+        .network_monitor
+        .lock()
+        .map_err(|_| internal("network monitor lock poisoned"))?;
+    if slot.is_some() || state.network_monitor_active.swap(true, Ordering::AcqRel) {
+        return Err(ApiError::from(CoreError::InvalidConfig(
+            "network monitoring is already running".into(),
+        )));
+    }
+    let initial = MonitorSnapshot::new(config.clone());
+    *state
+        .network_snapshot
+        .lock()
+        .map_err(|_| internal("network snapshot lock poisoned"))? = Some(initial.clone());
+    let token = CancellationToken::new();
+    let task_token = token.clone();
+    let snapshot = state.network_snapshot.clone();
+    let storage = state.storage.clone();
+    let emitter = app.clone();
+    let task = tauri::async_runtime::spawn(async move {
+        let callback_snapshot = snapshot.clone();
+        let callback_app = emitter.clone();
+        match run_monitor_session(config, task_token, move |update| {
+            if let Ok(mut current) = callback_snapshot.lock() {
+                *current = Some(update.clone());
+            }
+            let _ = callback_app.emit("network-monitor-update", update);
+        })
+        .await
+        {
+            Ok(summary) => match storage.save_monitor_session(&summary) {
+                Ok(saved) => {
+                    if let Ok(mut current) = snapshot.lock() {
+                        if let Some(last) = current.as_mut() {
+                            last.id = saved.id;
+                        }
+                    }
+                    let _ = emitter.emit("network-monitor-session-saved", saved);
+                    Ok(())
+                }
+                Err(error) => {
+                    tracing::warn!("could not save monitor session: {error}");
+                    Err(format!("could not save monitor session: {error}"))
+                }
+            },
+            Err(error) => {
+                tracing::error!("network monitor stopped with error: {error}");
+                Err(error.to_string())
+            }
+        }
+    });
+    *slot = Some((token, task));
+    Ok(initial)
+}
+
+#[tauri::command]
+async fn stop_network_monitor(state: State<'_, AppState>) -> CmdResult<bool> {
+    let active = state
+        .network_monitor
+        .lock()
+        .map_err(|_| internal("network monitor lock poisoned"))?
+        .take();
+    if let Some((token, task)) = active {
+        token.cancel();
+        let result = task
+            .await
+            .map_err(|_| internal("network monitor task failed"));
+        state.network_monitor_active.store(false, Ordering::Release);
+        result?.map_err(|error| ApiError::from(CoreError::Storage(error)))?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+fn get_network_monitor_snapshot(state: State<'_, AppState>) -> CmdResult<Option<MonitorSnapshot>> {
+    Ok(state
+        .network_snapshot
+        .lock()
+        .map_err(|_| internal("network snapshot lock poisoned"))?
+        .clone())
+}
+
+#[tauri::command]
+fn list_monitor_sessions(
+    state: State<'_, AppState>,
+    limit: u32,
+) -> CmdResult<Vec<MonitorSessionSummary>> {
+    Ok(state.storage.list_monitor_sessions(limit)?)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -225,6 +331,15 @@ struct QuickFixResult {
     title: String,
     message: String,
     completed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OptimizerExecution {
+    result: QuickFixResult,
+    after: Option<ScanReport>,
+    comparisons: Vec<MeasurementComparison>,
+    verification_error: Option<String>,
+    history_id: Option<i64>,
 }
 
 /// Runs one fixed, read-only-impact maintenance command. No UI text is passed to the OS.
@@ -256,7 +371,6 @@ fn delete_temp_files(state: State<'_, AppState>, ids: Vec<String>) -> CmdResult<
     Ok(turbofix_core::cleanup::delete_selected(cache, &ids)?)
 }
 
-#[tauri::command]
 fn flush_dns_cache() -> CmdResult<QuickFixResult> {
     #[cfg(windows)]
     {
@@ -294,6 +408,80 @@ fn flush_dns_cache() -> CmdResult<QuickFixResult> {
             "DNS cache flushing is available only on Windows 10/11".into(),
         )))
     }
+}
+
+#[tauri::command]
+async fn execute_optimizer_action(
+    state: State<'_, AppState>,
+    action: String,
+    baseline_scan_id: i64,
+) -> CmdResult<OptimizerExecution> {
+    let before = state.storage.get_scan(baseline_scan_id)?;
+    if action != "flush_dns_cache"
+        || !recommendations(&before)
+            .iter()
+            .any(|r| r.action.as_str() == action)
+    {
+        return Err(ApiError::from(CoreError::InvalidConfig(
+            "action is unsupported or not recommended by the supplied diagnostic evidence".into(),
+        )));
+    }
+    // Only the fixed allowlisted action reaches the OS. The existing implementation
+    // invokes ipconfig.exe with the single constant /flushdns argument.
+    let result = match flush_dns_cache() {
+        Ok(result) => result,
+        Err(error) => QuickFixResult {
+            succeeded: false,
+            title: "DNS cache flush failed".into(),
+            message: error.message,
+            completed_at: chrono::Utc::now().to_rfc3339(),
+        },
+    };
+    let mut after = None;
+    let mut verification_error = None;
+    if result.succeeded {
+        match run_scan(before.config.clone(), CancellationToken::new(), |_| {}).await {
+            Ok(mut report) => {
+                match state.storage.save_scan(&report) {
+                    Ok(id) => report.id = Some(id),
+                    Err(e) => tracing::warn!("could not save optimizer verification scan: {e}"),
+                }
+                after = Some(report);
+            }
+            Err(e) => verification_error = Some(e.to_string()),
+        }
+    }
+    let comparisons = after
+        .as_ref()
+        .map(|a| turbofix_core::optimizer::compare(&before, a))
+        .unwrap_or_default();
+    let execution = turbofix_core::optimizer::execution_state(result.succeeded, after.is_some());
+    let history_id =
+        match state
+            .storage
+            .save_optimizer_run(&action, execution, &before, after.as_ref())
+        {
+            Ok(id) => Some(id),
+            Err(e) => {
+                tracing::error!("could not persist optimizer run: {e}");
+                None
+            }
+        };
+    Ok(OptimizerExecution {
+        result,
+        after,
+        comparisons,
+        verification_error,
+        history_id,
+    })
+}
+
+#[tauri::command]
+fn optimizer_history(
+    state: State<'_, AppState>,
+    limit: u32,
+) -> CmdResult<Vec<turbofix_core::storage::OptimizerRun>> {
+    Ok(state.storage.optimizer_history(limit)?)
 }
 
 /// Returns the report as pretty JSON text for the UI to save. Nothing is uploaded.
@@ -347,9 +535,15 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
+            let dir = app.path().app_data_dir().map_err(|error| {
+                tracing::error!(%error, "startup initialization failed resolving app data directory");
+                format!("cannot resolve application data directory: {error}")
+            })?;
             let storage = Storage::open(&dir.join("turbofix.db"))
-                .map_err(|e| format!("cannot open database: {e}"))?;
+                .map_err(|error| {
+                    tracing::error!(%error, "startup initialization failed opening local storage");
+                    format!("cannot open local history database: {error}")
+                })?;
             // Retention: keep at most 500 scans / 90 days of scans and 7 days of performance samples.
             if let Err(e) = storage
                 .prune_scans(90, 500)
@@ -364,6 +558,9 @@ pub fn run() {
                 last_perf_record: Mutex::new(None),
                 speed_test_running: Mutex::new(false),
                 cleanup_cache: Mutex::new(None),
+                network_monitor: Mutex::new(None),
+                network_snapshot: Arc::new(Mutex::new(None)),
+                network_monitor_active: Arc::new(AtomicBool::new(false)),
             });
             Ok(())
         })
@@ -385,9 +582,14 @@ pub fn run() {
             run_speed_test,
             measure_tcp_ping,
             list_speed_tests,
+            start_network_monitor,
+            stop_network_monitor,
+            get_network_monitor_snapshot,
+            list_monitor_sessions,
             preview_temp_cleanup,
             delete_temp_files,
-            flush_dns_cache,
+            execute_optimizer_action,
+            optimizer_history,
             export_scan_json,
             get_mobile_wifi_info,
             open_wifi_settings

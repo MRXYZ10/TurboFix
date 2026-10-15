@@ -83,8 +83,8 @@ pub fn unavailable_metrics() -> Vec<UnavailableMetric> {
             reason: "Wi-Fi data is measured separately in Wi-Fi Analysis on Windows; it is not part of this scan report.".into(),
         },
         UnavailableMetric {
-            name: "ICMP ping".into(),
-            reason: "Latency uses TCP connect timing, which needs no administrator rights.".into(),
+            name: "IP packet loss and ICMP ping".into(),
+            reason: "Latency uses TCP connect timing; ICMP ping and IP packet loss are not measured.".into(),
         },
     ]
 }
@@ -190,7 +190,7 @@ where
     let results = join_all(config.dns_hosts.iter().map(|h| time_dns(h, dns_to, cancel))).await;
     report.dns = results.into_iter().collect::<Result<Vec<_>>>()?;
 
-    step("Measuring latency, jitter and loss", 4);
+    step("Measuring TCP-connect latency and outcomes", 4);
     let interval = Duration::from_millis(config.probe_interval_ms);
     let probe_to = Duration::from_millis(config.probe_timeout_ms);
     let results = join_all(

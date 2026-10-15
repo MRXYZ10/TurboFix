@@ -1,33 +1,19 @@
-# TurboFix Release Audit
+# TurboFix v0.3.4 Release Audit
 
-Last updated: 2026-10-13
+## Automated verification and package
 
-## Automated verification
+See [`VERIFICATION_STATUS.md`](VERIFICATION_STATUS.md) for the exact results from the release working tree and the final installer path and SHA-256.
 
-The following checks completed successfully in the current Windows development workspace:
+The package is a Windows NSIS installer configured for current-user installation. It is unsigned unless signing is separately completed and verified. A build or executable smoke check does not prove installation, upgrade, uninstall, or broad Windows compatibility.
 
-- `npm run lint`
-- `npm run typecheck`
-- `npm test` — 20 tests passed.
-- `npm run build`
-- `cargo fmt --all -- --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace` — 51 core unit tests and 8 integration tests passed; Tauri targets with no tests also completed successfully.
-- `powershell -ExecutionPolicy Bypass -File .\scripts\verify-windows.ps1 -BuildInstaller`
+## Product and safety boundaries
 
-The verification script generated the NSIS installer:
-`target\release\bundle\nsis\TurboFix_0.3.0_x64-setup.exe`
+- Diagnostics report observed TCP, DNS, HTTPS, and adapter measurements with their limits; TCP-connect timing is not ICMP ping or IP packet loss.
+- Multi-target monitoring bounds concurrent probes, supports cancellation, and persists session summaries locally in SQLite.
+- The only network optimizer action is a fixed DNS resolver-cache flush, suggested from relevant scan findings. It requires explicit confirmation and captures equivalent before/after measurements where possible. It cannot guarantee that stale DNS cache caused the original failure.
+- No arbitrary user shell command, broad registry modification, security-protection change, Windows service disabling, or unnecessary administrator requirement is part of this workflow.
+- When measurements fail or cannot establish a meaningful difference, the result reports the failure or no measurable improvement rather than claiming a benefit.
 
-The developer also reported a manual installation and launch smoke test with no console-window flickering.
+## Remaining validation limits
 
-## Outstanding release gates
-
-1. Review Tauri capabilities and permissions, and verify outbound network behavior.
-2. Audit cleanup and optimization operations for permissions, failure handling, symlink/reparse-point behavior, locked files and race conditions.
-3. Exercise supported Windows versions and hardware; test clean installation, upgrade and uninstall.
-4. Validate network measurements independently. Do not claim guaranteed improvements to Wi-Fi signal, latency or download speeds without evidence.
-5. Sign the installer using an appropriate code-signing certificate, then verify the signature before distribution.
-
-## Honest release assessment
-
-Automated checks and installer generation passed, but no production certification is claimed. A successful build and smoke test do not replace a security audit or broad hardware validation. The installer remains unsigned until signing and signature verification are actually completed.
+Interactive app behavior, installation/upgrade/uninstall, hardware coverage, and network outcomes must be checked on the intended Windows systems. Results depend on adapter, DNS, target reachability, firewall, and background traffic. The installer is unsigned until code-signing and signature verification are performed.

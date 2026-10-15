@@ -4242,7 +4242,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "turbofix"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "chrono",
  "serde",
@@ -4258,7 +4258,7 @@ dependencies = [
 
 [[package]]
 name = "turbofix-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "chrono",
  "default-net",

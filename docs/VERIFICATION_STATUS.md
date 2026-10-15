@@ -1,29 +1,25 @@
-# TurboFix Verification Status
+# TurboFix v0.3.4 Verification Status
 
-Last updated: 2026-10-13
+## Release candidate checks
 
-## Verified in the current Windows development workspace
+The following checks passed on the v0.3.4 working tree:
 
-- Frontend lint: passed.
-- TypeScript typecheck: passed.
-- Frontend tests: 20 passed across 2 test files.
-- Frontend production build: passed.
-- Rust formatting check: passed.
-- Rust Clippy with warnings denied: passed.
-- Rust workspace tests: passed, including 51 core unit tests and 8 integration tests.
-- Windows verification script with installer build: passed.
-- NSIS installer generated: `TurboFix_0.3.0_x64-setup.exe`.
-- Manual smoke test reported by the developer: installed application launched without the earlier console-window flickering.
+- Frontend tests: 30 passed across 5 files (`npm.cmd test`).
+- Frontend lint: passed (`npm.cmd run lint`).
+- Frontend production build: passed (`npm.cmd run build`, also run by the Tauri package command).
+- Rust formatting: passed (`cargo fmt --all -- --check`).
+- Rust Clippy: passed (`cargo clippy --workspace --all-targets -- -D warnings`).
+- Rust workspace tests: passed (69 core unit tests, 11 integration tests, and all remaining workspace/doc-test targets).
+- `git diff --check`: passed; Git reported existing LF-to-CRLF working-copy warnings.
+- Windows NSIS installer: built successfully with the isolated Cargo target directory.
+- Installer path: `target-v034-isolated/release/bundle/nsis/TurboFix_0.3.4_x64-setup.exe` (2,742,884 bytes).
+- Installer SHA-256: `4A9892937255164633C15869D00A84A3BBA9FADB8A64B3D3783C76C48DB3F56A`.
+- Installer signing: unsigned unless signing is separately completed and verified.
 
-## Not yet established
+## Manual Windows checks
 
-- Production certification or independent security review.
-- Exhaustive Windows 10/11 hardware and network testing.
-- Full clean-install, upgrade and uninstall test matrix.
-- Independent verification of real-world Wi-Fi signal improvement, latency and download throughput.
-- Complete review of Tauri capabilities, outbound network behavior, cleanup safety, symlinks and race conditions.
-- Authenticode signing and verification of the distributed installer.
+Interactive desktop testing is not implied by automated tests or installer generation. Verify launching and closing the app; successful and refused local TCP targets; monitoring start/stop and persisted history after restart; and optimizer preview, cancellation, explicit confirmation, execution, and repeat-scan evidence. Also test clean installation, upgrade, and uninstall in a disposable Windows account or VM.
 
-## Release status
+## Limitations
 
-The project has passed the automated checks and installer build listed above. This is not proof of production readiness or guaranteed network-performance improvements. The installer is unsigned unless signing is completed separately. Complete the outstanding security and distribution checks before making production-certification claims.
+No broad Windows hardware or network certification is claimed. TCP-connect timings are not ICMP ping or packet loss. DNS-cache flushing may not resolve an observed DNS failure; measurements can vary with targets, adapter, resolver, firewall, and background traffic. The installer is unsigned until signing and signature verification are completed.

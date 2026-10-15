@@ -20,7 +20,8 @@ export default function Overview({ report, running, cancelling, progress, scanEr
   const done = report && report.status === "completed";
   const latencyMedian = done ? median(report.latency.map((l) => l.stats.median_ms)) : null;
   const jitter = done ? median(report.latency.map((l) => l.stats.jitter_ms)) : null;
-  const loss = done && report.latency.length ? Math.max(...report.latency.map((l) => l.stats.loss_pct)) : null;
+  const tcpFailureValues = done ? report.latency.map((l) => l.stats.tcp_failure_pct).filter((v): v is number => v !== null) : [];
+  const tcpFailurePct = tcpFailureValues.length ? Math.max(...tcpFailureValues) : null;
   const dns = done ? median(report.dns.map((d) => d.time_ms)) : null;
   const s = perf.snapshot;
   const memPct = s && s.memory_total_bytes > 0 ? (s.memory_used_bytes / s.memory_total_bytes) * 100 : null;
@@ -66,7 +67,7 @@ export default function Overview({ report, running, cancelling, progress, scanEr
         <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-5">
           <Metric label="Latency (median)" value={fmtMs(latencyMedian)} unavailable={latencyMedian === null} hint="TCP connect time" />
           <Metric label="Jitter" value={fmtMs(jitter)} unavailable={jitter === null} />
-          <Metric label="Probe loss" value={fmtPct(loss, 0)} unavailable={loss === null} hint="worst target" />
+          <Metric label="TCP connect failures" value={tcpFailurePct === null ? "Not measured" : fmtPct(tcpFailurePct, 0)} unavailable={tcpFailurePct === null} hint="not IP packet loss" />
           <Metric label="DNS (median)" value={fmtMs(dns)} unavailable={dns === null} />
           <div className="relative"><Metric label="Download / upload" value={speedTest ? `${speedTest.download_mbps.toFixed(1)} / ${speedTest.upload_mbps.toFixed(1)} Mbps` : "Not tested"} unavailable={!speedTest} hint={speedTest ? "Download / upload · Cloudflare" : "Run a measured speed test"} /><button onClick={onOpenSpeedTest} className="mt-2 text-xs font-medium text-accent hover:underline">{speedTest ? "Run again" : "Start speed test"}</button></div>
         </div>

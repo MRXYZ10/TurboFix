@@ -4,13 +4,14 @@
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use turbofix_core::config::ScanConfig;
+use turbofix_core::network::{tcp_connect, ProbeOutcome};
 use turbofix_core::performance::PerfMonitor;
 use turbofix_core::scan::{run_scan, ScanStatus};
 use turbofix_core::storage::Storage;
 
 fn local_config(port: u16) -> ScanConfig {
     ScanConfig {
-        dns_hosts: vec!["localhost".into(), "does-not-exist.invalid".into()],
+        dns_hosts: vec!["localhost".into()],
         https_endpoints: vec![],
         latency_targets: vec![format!("127.0.0.1:{port}")],
         probe_count: 3,
@@ -33,7 +34,7 @@ async fn scan_runs_and_persists_across_reopen() {
         .unwrap();
     assert_eq!(report.status, ScanStatus::Completed);
     assert_eq!(report.latency[0].stats.received, 3);
-    assert!(report.dns.iter().any(|d| d.ok) && report.dns.iter().any(|d| !d.ok));
+    assert!(report.dns.iter().all(|d| d.ok));
     assert!(report.diagnosis.is_some());
     assert!(report.unavailable.iter().any(|u| u.name.contains("speed")));
 
@@ -52,6 +53,7 @@ async fn scan_runs_and_persists_across_reopen() {
     assert_eq!(list[0].id, id);
     assert_eq!(list[0].status, ScanStatus::Completed);
     assert!(list[0].median_latency_ms.is_some());
+    assert_eq!(list[0].loss_pct, None);
     let back = s.get_scan(id).unwrap();
     assert_eq!(back.id, Some(id));
     assert_eq!(back.latency, report.latency);
@@ -101,14 +103,46 @@ async fn unreachable_targets_never_produce_fake_latency() {
     drop(l);
     let cfg = ScanConfig {
         dns_hosts: vec!["does-not-exist.invalid".into()],
+        latency_targets: vec!["does-not-exist.invalid:443".into()],
         ..local_config(port)
     };
     let report = run_scan(cfg, CancellationToken::new(), |_| {})
         .await
         .unwrap();
     assert_eq!(report.latency[0].stats.median_ms, None);
-    assert_eq!(report.latency[0].stats.loss_pct, 100.0);
+    assert_eq!(report.latency[0].stats.loss_pct, None);
+    assert_eq!(
+        report.latency[0].stats.resolution_failed + report.latency[0].stats.resolution_timeouts,
+        3
+    );
     assert!(report.dns.iter().all(|d| d.time_ms.is_none()));
+}
+
+#[tokio::test]
+async fn closed_loopback_port_is_distinguished_from_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let outcome = tcp_connect(
+        &addr.to_string(),
+        Duration::from_secs(10),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !matches!(outcome, ProbeOutcome::Connected { .. }),
+        "closed port cannot be a successful connect: {outcome:?}"
+    );
+    assert!(
+        matches!(
+            outcome,
+            ProbeOutcome::ConnectionRefused { .. }
+                | ProbeOutcome::Timeout { .. }
+                | ProbeOutcome::TransportError { .. }
+        ),
+        "unexpected outcome: {outcome:?}"
+    );
 }
 
 #[test]

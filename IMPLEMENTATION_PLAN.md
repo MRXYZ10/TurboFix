@@ -3,10 +3,10 @@
 ## Architecture
 Cargo workspace: `turbofix-core` (network diagnostics, Wi-Fi reader, speed test, cleanup safety checks, diagnosis and SQLite) and `src-tauri` (typed desktop commands and Windows-specific actions). React/TypeScript UI communicates with Rust through `src/api.ts`. SQLite schema changes use `PRAGMA user_version` migrations.
 
-## Current status (0.3.0 source)
+## Current status (0.3.4 release candidate)
 | Area | Status | Notes |
 |---|---|---|
-| Connectivity diagnostics | Implemented | Gateway reachability, DNS timing, TCP-connect timing/jitter/loss, HTTPS reachability, timeouts and scan cancellation. TCP-connect is not ICMP ping. |
+| Connectivity diagnostics | Implemented | Gateway reachability, DNS timing, TCP-connect latency/jitter, categorized TCP outcomes, HTTPS reachability, timeouts and scan cancellation. IP packet loss and ICMP ping are not measured. |
 | PC monitoring | Implemented | CPU, memory, swap, disk capacity, process summaries and aggregate network activity; disk I/O is not measured. |
 | Speed test | Implemented in source | Explicit Cloudflare HTTPS throughput test with bounded transfer and local SQLite history. Must be exercised on Windows and compared with a second speed-test service before release. |
 | Wi-Fi analysis | Implemented in source for Windows | Fixed `netsh` read-only queries. Parsing depends on Windows command output language and adapter driver. |

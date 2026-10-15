@@ -23,6 +23,12 @@ import type {
 } from "./types";
 import { ErrorBanner } from "./components/ui";
 
+function redactStartupDetails(message: string): string {
+  return message
+    .replace(/\b(password|passwd|token|secret|authorization|api[_-]?key)\b\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .replace(/(https?:\/\/)[^/@\s]+:[^/@\s]+@/gi, "$1[redacted]@");
+}
+
 type PageId =
   | "overview"
   | "diagnostics"
@@ -67,7 +73,7 @@ const NAV: NavItem[] = [
   },
   {
     id: "ping",
-    label: "Ping monitor",
+    label: "TCP connect monitor",
     icon: "DX",
     section: "Workspace",
     hint: "Monitor TCP response time",
@@ -167,6 +173,7 @@ export default function App({ api = realApi }: { api?: Api }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [capabilities, setCapabilities] = useState<Capability[] | null>(null);
+  const [startupError, setStartupError] = useState<ApiError | null>(null);
   const isAndroid = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
 
   const [report, setReport] = useState<ScanReport | null>(null);
@@ -216,18 +223,24 @@ export default function App({ api = realApi }: { api?: Api }) {
     void loadSpeedHistory();
   }, [api, loadLatest, loadSpeedHistory]);
 
-  useEffect(() => {
-    let active = true;
-    void api.capabilities().then((items) => {
-      if (active) setCapabilities(items);
-    }).catch(() => {
-      // Keep conservative Android navigation if capability lookup fails.
-      if (active) setCapabilities(null);
-    });
-    return () => {
-      active = false;
-    };
+  const initialize = useCallback(async () => {
+    setStartupError(null);
+    try {
+      const [items] = await Promise.all([api.capabilities(), api.getConfig()]);
+      setCapabilities(items);
+    } catch (error) {
+      const diagnostic = toApiError(error);
+      console.error("TurboFix startup initialization failed", {
+        code: diagnostic.code,
+        message: redactStartupDetails(diagnostic.message),
+      });
+      setStartupError(diagnostic);
+    }
   }, [api]);
+
+  useEffect(() => {
+    void initialize();
+  }, [initialize]);
 
   useEffect(() => {
     if (!mobileNav) return;
@@ -403,7 +416,7 @@ export default function App({ api = realApi }: { api?: Api }) {
           {!collapsed && (
             <div className="sidebar-version">
               <span className="online-dot" />
-              All systems local <span>v0.3.0</span>
+              All systems local <span>v{__APP_VERSION__}</span>
             </div>
           )}
         </div>
@@ -459,6 +472,15 @@ export default function App({ api = realApi }: { api?: Api }) {
               <ErrorBanner
                 message={loadError.message}
                 onRetry={loadLatest}
+              />
+            </div>
+          )}
+
+          {startupError && (
+            <div className="mb-4">
+              <ErrorBanner
+                message={`TurboFix could not finish startup initialization (error ${startupError.code}). Retry or close and reopen the app.`}
+                onRetry={() => void initialize()}
               />
             </div>
           )}
