@@ -196,6 +196,18 @@ fn trim_front<T>(items: &mut Vec<T>, limit: usize) {
     }
 }
 
+fn duration_ms_ceil(duration: Duration) -> u64 {
+    let fractional_ms = if duration.subsec_nanos() % 1_000_000 == 0 {
+        0
+    } else {
+        1
+    };
+    duration
+        .as_millis()
+        .saturating_add(fractional_ms)
+        .min(u64::MAX as u128) as u64
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MonitorSnapshot {
     pub id: Option<i64>,
@@ -355,7 +367,7 @@ where
                 item.record(chrono::Utc::now().to_rfc3339(), outcome);
             }
         }
-        snapshot.elapsed_ms = started.elapsed().as_millis() as u64;
+        snapshot.elapsed_ms = duration_ms_ceil(started.elapsed());
         snapshot.last_updated_at = chrono::Utc::now().to_rfc3339();
         snapshot.refresh_totals();
         on_update(&snapshot);
@@ -367,7 +379,7 @@ where
         }
     }
 
-    snapshot.elapsed_ms = started.elapsed().as_millis() as u64;
+    snapshot.elapsed_ms = duration_ms_ceil(started.elapsed());
     snapshot.running = false;
     snapshot.last_updated_at = chrono::Utc::now().to_rfc3339();
     snapshot.refresh_totals();
@@ -392,6 +404,14 @@ mod tests {
             timeout_ms: 1000,
             max_concurrency: 1,
         }
+    }
+
+    #[test]
+    fn elapsed_duration_rounds_up_without_erasing_submillisecond_sessions() {
+        assert_eq!(duration_ms_ceil(Duration::from_nanos(1)), 1);
+        assert_eq!(duration_ms_ceil(Duration::from_micros(999)), 1);
+        assert_eq!(duration_ms_ceil(Duration::from_millis(1)), 1);
+        assert_eq!(duration_ms_ceil(Duration::from_micros(1_001)), 2);
     }
 
     #[test]
