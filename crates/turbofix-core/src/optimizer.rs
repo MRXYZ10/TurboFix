@@ -40,6 +40,9 @@ pub fn recommendations(scan: &ScanReport) -> Vec<Recommendation> {
     if scan.status != ScanStatus::Completed || !scan.platform.is_windows {
         return vec![];
     }
+    if !scan.dns.iter().any(|result| !result.ok) {
+        return vec![];
+    }
     let Some(diagnosis) = scan.diagnosis.as_ref() else {
         return vec![];
     };
@@ -168,6 +171,8 @@ mod tests {
             dns_hosts: vec!["a.test".into()],
             ..ScanConfig::default()
         };
+        let mut platform = platform_info();
+        platform.is_windows = true;
         ScanReport {
             id: Some(1),
             app_version: "test".into(),
@@ -175,7 +180,7 @@ mod tests {
             duration_ms: 1,
             status: ScanStatus::Completed,
             error: None,
-            platform: platform_info(),
+            platform,
             config,
             interfaces: vec![],
             gateway: None,
@@ -227,7 +232,7 @@ mod tests {
             Some(8.0),
         );
         assert!(recommendations(&none).is_empty());
-        let dns = scan(
+        let mut dns = scan(
             vec![Finding {
                 id: "dns_failure".into(),
                 severity: Severity::Critical,
@@ -238,6 +243,15 @@ mod tests {
             }],
             None,
         );
+        assert!(recommendations(&dns).is_empty());
+        dns.dns.push(crate::network::DnsResult {
+            host: "a.test".into(),
+            ok: false,
+            time_ms: None,
+            address_count: 0,
+            timed_out: true,
+            error: Some("DNS lookup timed out".into()),
+        });
         let recs = recommendations(&dns);
         assert_eq!(recs.len(), 1);
         assert!(recs[0].hypothesis);
